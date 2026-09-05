@@ -1,0 +1,22 @@
+{
+  "name": "personal-diary",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "一本只属于你的、本地优先、越记越懂你的私人日记",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @diary/server --filter @diary/web dev",
+    "dev:server": "pnpm --filter @diary/server dev",
+    "dev:web": "pnpm --filter @diary/web dev",
+    "build": "pnpm --filter @diary/web build",
+    "start": "pnpm --filter @diary/server start",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "packageManager": "pnpm@11.25.0",
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
