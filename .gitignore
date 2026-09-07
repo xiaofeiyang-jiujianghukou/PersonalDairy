@@ -19,3 +19,10 @@ data/
 *.db
 *.db-wal
 *.db-shm
+.android-sdk/
+
+# 本机 Android 构建环境(不入库)
+.android-sdk/
+.jdk21/
+.gradle-home/
+.gradle-home-build*.log

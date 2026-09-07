@@ -34,21 +34,28 @@
 
 > 局限:此形态数据存在电脑端;手机是客户端。符合"多端同步"的**过渡阶段**。
 
-### 路径 B:Capacitor 打包安卓 APK(需要一台装了 Android Studio 的电脑)
+### 路径 B:Capacitor 打包安卓 APK(已在本机验证通过 ✅)
 
-在**具备 Android SDK / Android Studio 的电脑**上,于本仓库目录执行:
+> 已成功产出:`apps/web/android/app/build/outputs/apk/debug/app-debug.apk`(约 4.2MB,含签名与最新前端)。
 
 ```bash
-# 1) 构建前端并同步进安卓工程(android/ 已在本仓库内,免 cap init/add)
-pnpm install
-pnpm --filter @diary/web apk:debug
-# 产物: apps/web/android/app/build/outputs/apk/debug/app-debug.apk
+# 1) 先装好三样一次性的"构建环境",再打包
+#    ① JDK 21(必需:Capacitor 8 用 Java 21 编译;Gradle 8.14 不支持 JDK 25,JDK 17 又编不了 source 21)
+#    ② Android SDK:Platform 36 + Build-Tools 35.0.0(AGP 8.13 默认需要 35.0.0)
+#    ③ 把 SDK 路径写进 android/local.properties(本机示例,该文件不入库):
+#         sdk.dir=/home/xiaofeiyang/AIWorkSpace/PersonalDairy/.android-sdk
+#    本机已在工作区备好:JDK21 → .jdk21/jdk-21.0.12.1+1;SDK → .android-sdk
+
+# 2) 用 JDK 21 执行一键打包(调试签名已内置 debug.keystore,不依赖家目录)
+export JAVA_HOME=/home/xiaofeiyang/AIWorkSpace/PersonalDairy/.jdk21/jdk-21.0.12.1+1
+export ANDROID_HOME=/home/xiaofeiyang/AIWorkSpace/PersonalDairy/.android-sdk
+pnpm install && pnpm --filter @diary/web apk:debug
 ```
 
-前置条件(仅需一次):
-- 安装 **Android Studio**(含 Android SDK 与 JDK 17),在 `android/local.properties` 写入
-  `sdk.dir=/你的/Android/Sdk 路径`(或设置 `ANDROID_HOME` 环境变量);
-- 也可用 Android Studio 直接打开 `apps/web/android/` 目录点「Run」。
+- 在别的机器打包:同样要求 **JDK 21 + Android SDK(Platform 36 / Build-Tools 35.0.0)**,
+  把 `sdk.dir` 指向你自己的 SDK 路径(Android Studio 装的即可),再跑上面命令。
+- 打包中网络问题已内置解决:Gradle 发行版走**腾讯镜像**,Maven 依赖走**阿里云镜像**(见 `android/gradle/wrapper/gradle-wrapper.properties` 与 `android/build.gradle`)。
+- 调试签名已改为使用**项目内 `debug.keystore`**(标准调试证书,密码 android),不再依赖 `~/.android`,受限环境下也能构建。
 
 把 APK 传到 Mate70(鸿蒙 4.3 兼容安卓)安装即可。
 
