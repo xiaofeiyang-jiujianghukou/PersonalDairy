@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
+import QRCode from 'qrcode';
 import {
   DATE_RE,
   MONTH_RE,
@@ -124,6 +126,24 @@ app.post('/api/sync', async (req, reply) => {
   }
   const applied = applySyncedEntries(entries);
   return { applied, entries: getAllEntriesForSync() };
+});
+
+// ---------- 扫码配对:给出本机局域网地址的二维码与文本 ----------
+function lanBaseUrl(): string {
+  const port = config.port;
+  const nets = os.networkInterfaces();
+  for (const list of Object.values(nets)) {
+    for (const n of list ?? []) {
+      if (n.family === 'IPv4' && !n.internal) return `http://${n.address}:${port}`;
+    }
+  }
+  return `http://localhost:${port}`;
+}
+
+app.get('/api/qr', async (_req, reply) => {
+  const url = lanBaseUrl();
+  const dataUrl = await QRCode.toDataURL(url, { margin: 1, width: 360 });
+  return { url, dataUrl };
 });
 
 // ---------- 月度小结 ----------
