@@ -751,4 +751,38 @@ a {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 18px;
+  flex-wrap: wrap;
+}
+
+.qr-img {
+  width: 240px;
+  height: 240px;
+  display: block;
+  margin: 0 auto 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+
+.qr-video {
+  width: 100%;
+  max-height: 320px;
+  border-radius: 10px;
+  background: #000;
+  margin-bottom: 12px;
+}
+
+.modal-hint.warn {
+  color: var(--danger);
+}
+
+.ok {
+  color: #2f7d5b;
+  font-size: 14px;
+  margin: 12px 0 0;
+}
+
+.err {
+  color: var(--danger);
+  font-size: 14px;
+  margin: 12px 0 0;
 }

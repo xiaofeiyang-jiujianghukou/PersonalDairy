@@ -4,6 +4,7 @@ import MonthView from './views/MonthView';
 import DayView from './views/DayView';
 import SearchView from './views/SearchView';
 import SettingsModal from './components/SettingsModal';
+import SyncModal from './components/SyncModal';
 import { exportUrl } from './api';
 
 type View =
@@ -15,6 +16,7 @@ type View =
 export default function App() {
   const [view, setView] = useState<View>({ kind: 'today' });
   const [showSettings, setShowSettings] = useState(false);
+  const [showSync, setShowSync] = useState(false);
 
   return (
     <div className="app">
@@ -39,9 +41,8 @@ export default function App() {
           >
             搜索
           </button>
-          <button onClick={() => setShowSettings(true)} title="配置日记服务器">
-            服务器
-          </button>
+          <button onClick={() => setShowSync(true)} title="配对电脑并同步">配对</button>
+          <button onClick={() => setShowSettings(true)} title="配置日记服务器">服务器</button>
           <a className="export-link" href={exportUrl()} title="导出全部日记为 Markdown">
             导出
           </a>
@@ -63,6 +64,7 @@ export default function App() {
         )}
       </main>
 
+      {showSync && <SyncModal onClose={() => setShowSync(false)} />}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   );
