@@ -16,6 +16,7 @@ export interface Config {
   dataDir: string;
   dbPath: string;
   uploadsDir: string;
+  imagesDir: string;
   ai: {
     provider: string;
     baseUrl: string;
@@ -45,6 +46,7 @@ export function loadConfig(): Config {
     dataDir,
     dbPath: path.join(dataDir, 'diary.db'),
     uploadsDir: path.join(dataDir, 'uploads'),
+    imagesDir: path.join(dataDir, 'images'),
     ai: {
       provider: process.env.AI_PROVIDER ?? 'openai-compatible',
       baseUrl: process.env.AI_BASE_URL ?? 'https://api.deepseek.com',

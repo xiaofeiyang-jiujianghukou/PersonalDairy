@@ -34,7 +34,15 @@ import {
 } from './db.js';
 import { getTextProvider, getVisionProvider } from './ai/index.js';
 import { summarizeMonth } from './ai/summary.js';
-import { entriesContainImages } from './images.js';
+import {
+  entriesContainImages,
+  imageIdFromDataUrl,
+  decodeImageDataUrl,
+  saveImage,
+  readImage,
+  listImageIds,
+} from './images.js';
+import { detectImageMime } from '@diary/shared/images';
 
 const config = loadConfig();
 initDb(config.dbPath);
@@ -118,14 +126,39 @@ app.get('/api/search', async (req) => {
 });
 
 // ---------- 多端同步 ----------
-// 另一设备把它的条目(含墓碑)推过来;按 LWW 合并后,返回本机全量(含墓碑)供对方合并。
+// 另一设备把它的条目(含墓碑)与图片推过来;按 LWW 合并后,返回本机全量(含墓碑)+ 对方缺失的图片。
 app.post('/api/sync', async (req, reply) => {
-  const entries = (req.body as { entries?: Entry[] } | null)?.entries;
+  const body = req.body as {
+    entries?: Entry[];
+    images?: Array<{ id?: string; dataUrl?: string }>;
+    localImageIds?: string[];
+  } | null;
+  const entries = body?.entries;
   if (!Array.isArray(entries) || entries.length > 100000) {
     return reply.code(400).send({ error: '无效的同步负载' });
   }
   const applied = applySyncedEntries(entries);
-  return { applied, entries: getAllEntriesForSync() };
+
+  // 存入对方送来的图片(按内容哈希,幂等去重)
+  for (const img of body?.images ?? []) {
+    if (!img || typeof img.dataUrl !== 'string') continue;
+    const decoded = decodeImageDataUrl(img.dataUrl);
+    if (!decoded) continue;
+    const id = img.id && /^[0-9a-f]{16,64}$/.test(img.id) ? img.id : imageIdFromDataUrl(img.dataUrl);
+    saveImage(config.imagesDir, id, decoded.bytes);
+  }
+
+  // 返回本机有、但对方没有的图片
+  const have = new Set<string>(body?.localImageIds ?? []);
+  const missing = listImageIds(config.imagesDir)
+    .filter((id) => !have.has(id))
+    .map((id) => {
+      const bytes = readImage(config.imagesDir, id);
+      return bytes ? { id, dataUrl: `data:${detectImageMime(bytes)};base64,${bytes.toString('base64')}` } : null;
+    })
+    .filter(Boolean);
+
+  return { applied, entries: getAllEntriesForSync(), images: missing };
 });
 
 // ---------- 扫码配对:给出本机局域网地址的二维码与文本 ----------
@@ -177,7 +210,7 @@ app.post('/api/summary', async (req, reply) => {
   }
   const hasImages = entriesContainImages(entries);
   const provider = hasImages ? getVisionProvider() : getTextProvider();
-  const content = await summarizeMonth(entries, provider, config.uploadsDir);
+  const content = await summarizeMonth(entries, provider, config.imagesDir, config.uploadsDir);
   const summary = upsertSummary(year, mon, content, entriesHash(entries));
   return { summary, model: hasImages ? config.ai.visionModel : config.ai.textModel };
 });
@@ -247,6 +280,28 @@ app.get('/api/uploads/:name', async (req, reply) => {
   const ext = path.extname(name).slice(1).toLowerCase();
   const mime = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
   return reply.type(mime).send(fs.readFileSync(fp));
+});
+
+// ---------- 内容寻址图片(统一模型) ----------
+// 上传:按内容哈希(id)去重存储;条目内引用 diary-img:<id>
+app.post('/api/images', async (req, reply) => {
+  const dataUrl = (req.body as { dataUrl?: string } | null)?.dataUrl;
+  if (typeof dataUrl !== 'string') return reply.code(400).send({ error: '缺少图片数据' });
+  const decoded = decodeImageDataUrl(dataUrl);
+  if (!decoded) return reply.code(400).send({ error: '仅支持 PNG / JPEG / GIF / WebP 图片' });
+  if (decoded.bytes.length > 32 * 1024 * 1024) return reply.code(413).send({ error: '图片过大(最大 32MB)' });
+
+  const id = imageIdFromDataUrl(dataUrl);
+  saveImage(config.imagesDir, id, decoded.bytes);
+  return reply.code(201).send({ id });
+});
+
+app.get('/api/images/:id', async (req, reply) => {
+  const id = (req.params as { id: string }).id;
+  if (!/^[0-9a-f]{16,64}$/.test(id)) return reply.code(404).send({ error: '图片不存在' });
+  const bytes = readImage(config.imagesDir, id);
+  if (!bytes) return reply.code(404).send({ error: '图片不存在' });
+  return reply.type(detectImageMime(bytes)).send(bytes);
 });
 
 // ---------- 静态托管(生产模式:把构建好的前端一并伺服) ----------

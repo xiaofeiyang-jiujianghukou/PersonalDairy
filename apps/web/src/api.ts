@@ -7,7 +7,8 @@ import type {
   SummaryReadResult,
 } from '@diary/shared';
 import { reconcileFull } from '@diary/shared/sync';
-import { IdbBackend, createLocalApi, type LocalBackend } from './lib/localStore';
+import { IdbBackend, createLocalApi, getImage, putImage, type LocalBackend } from './lib/localStore';
+import { exportLocalImages, importImageDataUrl } from './lib/image';
 
 const API_BASE_KEY = 'diary.apiBase';
 const SYNC_PARTNER_KEY = 'diary.syncPartner';
@@ -120,10 +121,23 @@ export async function syncNow(): Promise<{ applied: number; pulled: number; part
   if (!isPhoneLocal()) throw new Error('仅本地模式支持同步');
 
   const ours = await getLocalBackend().getAll(); // 含墓碑
-  const res = await httpFrom<{ applied?: number; entries: Entry[] }>(partner, '/api/sync', {
+  const ourImages = await exportLocalImages(); // 本机图片库
+  const res = await httpFrom<{
+    applied?: number;
+    entries: Entry[];
+    images?: Array<{ id: string; dataUrl: string }>;
+  }>(partner, '/api/sync', {
     method: 'POST',
-    body: JSON.stringify({ entries: ours }),
+    body: JSON.stringify({
+      entries: ours,
+      images: ourImages,
+      localImageIds: ourImages.map((i) => i.id),
+    }),
   });
+  // 拉取服务器端缺失的图片,写入本机图片库
+  for (const img of res.images ?? []) {
+    if (img?.dataUrl) await importImageDataUrl(img.dataUrl);
+  }
   const theirs: Entry[] = res.entries ?? [];
   const reconciled = reconcileFull(ours, theirs);
   const localMap = new Map(ours.map((e) => [e.id, e]));

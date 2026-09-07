@@ -1,14 +1,36 @@
 import { isPhoneMode } from '../api';
+import { getImage, listImageIds, putImage } from './localStore';
+import { detectImageMime, makeDiaryImgRef } from '@diary/shared/images';
+
+/** 计算图片内容哈希 id(sha256 十六进制,与服务端一致)。 */
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bytes as unknown as BufferSource);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result as string);
+    r.onerror = () => reject(new Error('读取图片失败'));
+    r.readAsDataURL(file);
+  });
+}
 
 /**
- * 把本地图片文件转成可插入 Markdown 的引用:
- * - 手机本地优先模式:直接作为 data URL 内嵌(自包含、永久可显示,无需服务器);
- * - 远端模式:上传到服务器 /api/uploads,返回其 URL。
+ * 把图片转为统一引用 `diary-img:<内容哈希>`:
+ * - 手机本地优先:按内容哈希存入 IndexedDB 图片库;
+ * - 远端:上传到服务器 /api/images(服务器按哈希去重),返回引用。
  */
 export async function uploadImage(file: File): Promise<string> {
+  if (isPhoneMode()) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const id = await sha256Hex(bytes);
+    await putImage(id, file);
+    return makeDiaryImgRef(id);
+  }
   const dataUrl = await fileToDataUrl(file);
-  if (isPhoneMode()) return dataUrl; // 本地优先:内嵌,不依赖任何服务器
-  const res = await fetch('/api/uploads', {
+  const res = await fetch('/api/images', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ dataUrl }),
@@ -17,14 +39,33 @@ export async function uploadImage(file: File): Promise<string> {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `上传失败 (${res.status})`);
   }
-  const data = (await res.json()) as { url: string };
-  return data.url;
+  const data = (await res.json()) as { id: string };
+  return makeDiaryImgRef(data.id);
 }
 
-/** Markdown 安全协议允许列表:允许 http/https/data(本地优先内嵌图)/blob。 */
-const URL_SAFE = /^(https?|data|blob)$/i;
+/**
+ * 把图片引用解析成可显示的 URL(blob/data URL 或原样)。
+ * 调用方负责 revoke 返回的 object URL。
+ */
+export async function resolveImageRef(ref: string): Promise<string> {
+  if (ref.startsWith('diary-img:')) {
+    const id = ref.slice('diary-img:'.length);
+    if (isPhoneMode()) {
+      const blob = await getImage(id);
+      return blob ? URL.createObjectURL(blob) : '';
+    }
+    const res = await fetch(`/api/images/${id}`);
+    if (!res.ok) return '';
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  }
+  if (ref.startsWith('/api/uploads/')) return isPhoneMode() ? '' : ref; // 旧式服务器文件:远端原样,本地无
+  return ref; // http / data URL 原样
+}
 
-/** react-markdown 的 urlTransform:放行 data:/blob: 图片,其余沿用默认安全策略。 */
+/** Markdown 安全协议允许列表:放行 data/blob/内含图片 + 我们的 diary-img 引用。 */
+const URL_SAFE = /^(https?|data|blob|diary-img)$/i;
+
 export function allowImageUrlTransform(value: string): string {
   const url = value.trim();
   const idx = url.indexOf(':');
@@ -35,12 +76,34 @@ export function allowImageUrlTransform(value: string): string {
   return url;
 }
 
-function fileToDataUrl(file: File): Promise<string> {
+/** 把本机图片库导出为 {id,dataUrl} 列表(供同步推送)。 */
+export async function exportLocalImages(): Promise<Array<{ id: string; dataUrl: string }>> {
+  const ids = await listImageIds();
+  const out: Array<{ id: string; dataUrl: string }> = [];
+  for (const id of ids) {
+    const blob = await getImage(id);
+    if (blob) out.push({ id, dataUrl: await blobToDataUrl(blob) });
+  }
+  return out;
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(new Error('读取图片失败'));
-    reader.readAsDataURL(file);
+    const r = new FileReader();
+    r.onload = () => resolve(r.result as string);
+    r.onerror = () => reject(new Error('读取图片失败'));
+    r.readAsDataURL(blob);
   });
 }
 
+/** 把 dataURL 写入本机图片库(供同步拉取存回)。 */
+export async function importImageDataUrl(dataUrl: string): Promise<string> {
+  const res = await fetch(dataUrl);
+  const blob = await res.blob();
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const id = await sha256Hex(bytes);
+  await putImage(id, blob);
+  return id;
+}
+
+export { detectImageMime };

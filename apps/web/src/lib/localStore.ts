@@ -18,6 +18,27 @@ const uid = (): string =>
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
+/** 共享同一个 IndexedDB 数据库(entries + images 两个对象仓库,版本 2)。 */
+const DB_NAME = 'personal-diary';
+const DB_VERSION = 2;
+let dbPromise: Promise<IDBDatabase> | null = null;
+
+function openDb(): Promise<IDBDatabase> {
+  if (!dbPromise) {
+    dbPromise = new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        if (!d.objectStoreNames.contains('entries')) d.createObjectStore('entries', { keyPath: 'id' });
+        if (!d.objectStoreNames.contains('images')) d.createObjectStore('images', { keyPath: 'id' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  return dbPromise;
+}
+
 /** 内存后端(测试/无痕环境)。 */
 export class MemoryBackend implements LocalBackend {
   private rows = new Map<string, Entry>();
@@ -32,23 +53,10 @@ export class MemoryBackend implements LocalBackend {
 
 /** IndexedDB 后端(手机 WebView / 浏览器离线存储)。 */
 export class IdbBackend implements LocalBackend {
-  private db: Promise<IDBDatabase>;
   private readonly store = 'entries';
 
-  constructor() {
-    this.db = new Promise((resolve, reject) => {
-      const req = indexedDB.open('personal-diary', 1);
-      req.onupgradeneeded = () => {
-        const d = req.result;
-        if (!d.objectStoreNames.contains(this.store)) d.createObjectStore(this.store, { keyPath: 'id' });
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-  }
-
   private tx(mode: IDBTransactionMode): Promise<IDBObjectStore> {
-    return this.db.then((d) => d.transaction(this.store, mode).objectStore(this.store));
+    return openDb().then((d) => d.transaction(this.store, mode).objectStore(this.store));
   }
 
   async getAll(): Promise<Entry[]> {
@@ -69,6 +77,35 @@ export class IdbBackend implements LocalBackend {
       for (const e of entries) store.put(e);
     });
   }
+}
+
+// ---------- 图片库(内容寻址,blob 存储) ----------
+export async function putImage(id: string, blob: Blob): Promise<void> {
+  const db = await openDb();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('images', 'readwrite');
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.objectStore('images').put({ id, blob });
+  });
+}
+
+export async function getImage(id: string): Promise<Blob | null> {
+  const db = await openDb();
+  return new Promise<Blob | null>((resolve, reject) => {
+    const req = db.transaction('images', 'readonly').objectStore('images').get(id);
+    req.onsuccess = () => resolve((req.result as { blob?: Blob } | null)?.blob ?? null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function listImageIds(): Promise<string[]> {
+  const db = await openDb();
+  return new Promise<string[]>((resolve, reject) => {
+    const req = db.transaction('images', 'readonly').objectStore('images').getAllKeys();
+    req.onsuccess = () => resolve((req.result as string[]) ?? []);
+    req.onerror = () => reject(req.error);
+  });
 }
 
 const nowIso = () => new Date().toISOString();
@@ -96,7 +133,15 @@ export function createLocalApi(backend: LocalBackend) {
     },
     async create(input: EntryCreateInput): Promise<Entry> {
       const ts = nowIso();
-      const e: Entry = { id: uid(), date: input.date, content: input.content, deviceId: DEVICE, createdAt: ts, updatedAt: ts, deletedAt: null };
+      const e: Entry = {
+        id: uid(),
+        date: input.date,
+        content: input.content,
+        deviceId: DEVICE,
+        createdAt: ts,
+        updatedAt: ts,
+        deletedAt: null,
+      };
       await withWrite((all) => [...all, e]);
       return e;
     },
@@ -134,10 +179,14 @@ export function createLocalApi(backend: LocalBackend) {
           const idx = e.content.toLowerCase().indexOf(needle);
           const start = idx < 0 ? 0 : Math.max(0, idx - 20);
           const end = idx < 0 ? 80 : Math.min(e.content.length, idx + needle.length + 46);
-          return { id: e.id, date: e.date, content: e.content, snippet: (start > 0 ? '…' : '') + e.content.slice(start, end) + (end < e.content.length ? '…' : '') };
+          return {
+            id: e.id,
+            date: e.date,
+            content: e.content,
+            snippet: (start > 0 ? '…' : '') + e.content.slice(start, end) + (end < e.content.length ? '…' : ''),
+          };
         });
     },
-    /** 小结:本地模式下提示需连接电脑(有同步伙伴时走远端接口)。 */
     summaryRead: async (_month: string): Promise<SummaryReadResult> => ({ exists: false }),
     summaryGenerate: async (_month: string): Promise<{ summary: MonthSummary; model: string }> => {
       throw new Error('本地模式暂不支持 AI 小结,请连接电脑后生成');

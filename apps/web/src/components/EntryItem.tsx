@@ -5,6 +5,7 @@ import type { Entry } from '../types';
 import { api } from '../api';
 import { blocksToMarkdown, parseBlocks, type Block } from '../lib/blocks';
 import { allowImageUrlTransform } from '../lib/image';
+import ResolvedImage from './ResolvedImage';
 import BlocksEditor from './BlocksEditor';
 
 export default function EntryItem({
@@ -80,7 +81,7 @@ export default function EntryItem({
         <BlocksEditor blocks={draftBlocks} onChange={setDraftBlocks} />
       ) : (
         <div className="markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={allowImageUrlTransform}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={allowImageUrlTransform} components={{ img: ResolvedImage }}>
             {entry.content}
           </ReactMarkdown>
         </div>

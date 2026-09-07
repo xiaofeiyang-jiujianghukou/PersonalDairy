@@ -6,6 +6,7 @@ import {
   type ClipboardEvent,
 } from 'react';
 import { uploadImage } from '../lib/image';
+import ResolvedImage from './ResolvedImage';
 import { newId, type Block } from '../lib/blocks';
 
 /**
@@ -126,7 +127,7 @@ export default function BlocksEditor({
       {blocks.map((b, i) =>
         b.kind === 'image' ? (
           <div key={b.id} className="block-image">
-            <img src={b.url} alt="图片" />
+            <ResolvedImage src={b.url} alt="图片" />
             <button
               className="block-image-remove"
               title="删除图片"

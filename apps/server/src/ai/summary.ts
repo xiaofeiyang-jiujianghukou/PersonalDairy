@@ -9,6 +9,7 @@ import { extractImageRefs, imageRefToDataUrl } from '../images.js';
 export async function summarizeMonth(
   entries: Entry[],
   provider: AiProvider,
+  imagesDir: string,
   uploadsDir: string,
 ): Promise<string> {
   const system: AiMessage = {
@@ -35,7 +36,7 @@ export async function summarizeMonth(
   for (const e of entries) {
     parts.push({ type: 'text', text: `【${e.date}】\n${e.content}\n\n` });
     for (const ref of extractImageRefs(e.content)) {
-      const dataUrl = imageRefToDataUrl(ref, uploadsDir);
+      const dataUrl = imageRefToDataUrl(ref, imagesDir, uploadsDir);
       if (dataUrl) {
         parts.push({ type: 'image_url', image_url: { url: dataUrl, detail: 'low' } });
       }
