@@ -8,6 +8,7 @@ import fastifyStatic from '@fastify/static';
 import {
   DATE_RE,
   MONTH_RE,
+  type Entry,
   type EntryCreateInput,
   type EntryUpdateInput,
 } from '@diary/shared';
@@ -26,6 +27,8 @@ import {
   entriesHash,
   getSummary,
   upsertSummary,
+  getAllEntriesForSync,
+  applySyncedEntries,
 } from './db.js';
 import { getTextProvider, getVisionProvider } from './ai/index.js';
 import { summarizeMonth } from './ai/summary.js';
@@ -110,6 +113,17 @@ app.get('/api/search', async (req) => {
   const q = (req.query as { q?: string }).q;
   if (typeof q !== 'string' || !q.trim()) return [];
   return searchEntries(q.trim());
+});
+
+// ---------- 多端同步 ----------
+// 另一设备把它的条目(含墓碑)推过来;按 LWW 合并后,返回本机全量(含墓碑)供对方合并。
+app.post('/api/sync', async (req, reply) => {
+  const entries = (req.body as { entries?: Entry[] } | null)?.entries;
+  if (!Array.isArray(entries) || entries.length > 100000) {
+    return reply.code(400).send({ error: '无效的同步负载' });
+  }
+  const applied = applySyncedEntries(entries);
+  return { applied, entries: getAllEntriesForSync() };
 });
 
 // ---------- 月度小结 ----------

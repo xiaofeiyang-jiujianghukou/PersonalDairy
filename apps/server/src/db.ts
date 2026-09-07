@@ -241,6 +241,53 @@ export function searchEntries(query: string): SearchResult[] {
   });
 }
 
+/** 导出全量条目(含墓碑),供同步交换。 */
+export function getAllEntriesForSync(): Entry[] {
+  const rows = getDb().prepare('SELECT * FROM entries ORDER BY id ASC').all() as Record<
+    string,
+    unknown
+  >[];
+  return rows.map(rowToEntry);
+}
+
+/**
+ * 把另一设备送来的条目合并进本地(last-writer-wins,按 updated_at)。
+ * 返回被采用(写入)的条数。
+ */
+export function applySyncedEntries(entries: Entry[]): number {
+  const d = getDb();
+  const stmt = d.prepare('SELECT updated_at FROM entries WHERE id = ?');
+  const upsert = d.prepare(
+    `INSERT INTO entries (id, date, content, device_id, created_at, updated_at, deleted_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       date = excluded.date,
+       content = excluded.content,
+       device_id = excluded.device_id,
+       created_at = excluded.created_at,
+       updated_at = excluded.updated_at,
+       deleted_at = excluded.deleted_at`,
+  );
+  let applied = 0;
+  d.exec('BEGIN');
+  try {
+    for (const e of entries) {
+      if (!e || typeof e.id !== 'string' || typeof e.date !== 'string' || typeof e.content !== 'string') {
+        continue;
+      }
+      const row = stmt.get(e.id) as { updated_at: string } | undefined;
+      if (row && e.updatedAt <= row.updated_at) continue; // 本地更新,跳过
+      upsert.run(e.id, e.date, e.content, e.deviceId ?? '', e.createdAt, e.updatedAt, e.deletedAt ?? null);
+      applied++;
+    }
+    d.exec('COMMIT');
+  } catch (err) {
+    d.exec('ROLLBACK');
+    throw err;
+  }
+  return applied;
+}
+
 /** 计算当月日记的内容指纹,用于判断小结是否需要重新生成。 */
 export function entriesHash(entries: Entry[]): string {
   const payload = entries.map((e) => `${e.id}|${e.updatedAt}|${e.content}`).join('\n');
