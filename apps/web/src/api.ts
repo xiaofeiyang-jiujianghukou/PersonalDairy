@@ -158,7 +158,9 @@ export async function syncNow(): Promise<{ applied: number; pulled: number; part
   if (!partner) throw new Error('尚未配对电脑');
   if (!isPhoneLocal()) throw new Error('仅本地模式支持同步');
 
-  const since = getLastSyncAt();
+  let since = getLastSyncAt();
+  // 自愈:若水位是"将来时间"(被将来时间戳/时钟偏差污染),重置为全量同步,避免新条目被跳过
+  if (since && since > new Date().toISOString()) since = '';
   const ours = await getLocalBackend().getAll(); // 含墓碑
   const delta = ours.filter((e) => !since || e.updatedAt > since); // 增量条目
 
@@ -213,9 +215,9 @@ export async function syncNow(): Promise<{ applied: number; pulled: number; part
     await getLocalBackend().put(legacy);
   }
 
-  // 推进同步水位到本机所有条目的最新时间
-  const newMax = allLocal.reduce((mx, e) => (e.updatedAt > mx ? e.updatedAt : mx), since || '');
-  setLastSyncAt(newMax);
+  // 推进同步水位:用"本次同步时刻"(手机自己的时钟),避免被服务端未来时间戳/时钟偏差污染,
+  // 从而保证之后新写的条目(时间戳 > 水位)始终会被当作增量推送。
+  setLastSyncAt(new Date().toISOString());
 
   return { applied: res.applied ?? 0, pulled: toWrite.length, partner };
 }
