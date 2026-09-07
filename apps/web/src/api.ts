@@ -7,8 +7,33 @@ import type {
   SummaryReadResult,
 } from '@diary/shared';
 
+const API_BASE_KEY = 'diary.apiBase';
+
+/** 读取用户配置的日记服务器地址(留空 = 同源,即当前页面自带的日记服务)。 */
+export function getApiBase(): string {
+  try {
+    return (localStorage.getItem(API_BASE_KEY) ?? '').trim().replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+/** 设置日记服务器地址(手机端 App 指向你电脑上的日记服务)。 */
+export function setApiBase(value: string): void {
+  try {
+    localStorage.setItem(API_BASE_KEY, value.trim());
+  } catch {
+    /* 忽略 */
+  }
+}
+
+function resolve(url: string): string {
+  const base = getApiBase();
+  return base ? `${base}${url}` : url;
+}
+
 async function http<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
+  const res = await fetch(resolve(url), {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   });
@@ -34,9 +59,9 @@ export const api = {
 
   create: (input: EntryCreateInput) =>
     http<Entry>('/api/entries', { method: 'POST', body: JSON.stringify(input) }),
-  update: (id: number, input: EntryUpdateInput) =>
+  update: (id: string, input: EntryUpdateInput) =>
     http<Entry>(`/api/entries/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
-  remove: (id: number) => http<{ ok: boolean }>(`/api/entries/${id}`, { method: 'DELETE' }),
+  remove: (id: string) => http<{ ok: boolean }>(`/api/entries/${id}`, { method: 'DELETE' }),
 
   search: (q: string) => http<SearchResult[]>(`/api/search?q=${encodeURIComponent(q)}`),
 
@@ -47,3 +72,8 @@ export const api = {
       body: JSON.stringify({ month }),
     }),
 };
+
+/** 导出下载地址(带服务器基址)。 */
+export function exportUrl(): string {
+  return resolve('/api/export');
+}

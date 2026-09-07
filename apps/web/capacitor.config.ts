@@ -5,10 +5,10 @@ const config: CapacitorConfig = {
   appName: '我的日记',
   webDir: 'dist',
   server: {
-    // 留空 = 打包前端为本地资源(默认)。
-    // 若要让 APK 直连家里电脑上的日记服务,可临时设为
-    // { url: 'http://192.168.x.x:4520', cleartext: true }
-    androidScheme: 'https',
+    // androidScheme=http:让 App 内页面用 http 源(这样可安全访问局域网 http://的日记服务,避免 https→http 混合内容被拦截)
+    androidScheme: 'http',
+    // 允许访问明文(http)的局域网服务地址
+    cleartext: true,
   },
 };
 

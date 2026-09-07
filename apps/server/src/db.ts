@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   Entry,
@@ -12,7 +12,10 @@ import type {
 
 let db: DatabaseSync | null = null;
 
-/** 初始化数据库(建库、建表)。使用 Node 内置 sqlite,零原生依赖。 */
+/**
+ * 初始化数据库(建库、建表)与迁移。
+ * 使用 Node 内置 sqlite,零原生依赖。
+ */
 export function initDb(dbPath: string): DatabaseSync {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   db = new DatabaseSync(dbPath);
@@ -20,12 +23,19 @@ export function initDb(dbPath: string): DatabaseSync {
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
 
+    CREATE TABLE IF NOT EXISTS meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS entries (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT PRIMARY KEY,
       date TEXT NOT NULL,
       content TEXT NOT NULL,
+      device_id TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);
 
@@ -38,7 +48,66 @@ export function initDb(dbPath: string): DatabaseSync {
       PRIMARY KEY (year, month)
     );
   `);
+  migrateIfNeeded(db);
+  getDeviceId(db); // 确保本设备标识存在
   return db;
+}
+
+/** 检测旧版(自增整数 id)表并把数据迁移为 UUID 主键 + 墓碑结构。 */
+function migrateIfNeeded(d: DatabaseSync): void {
+  const cols = (d.prepare('PRAGMA table_info(entries)').all() as Array<{ name: string }>).map(
+    (c) => c.name,
+  );
+  if (cols.includes('deleted_at')) return; // 已是 v2
+
+  const rows = d.prepare('SELECT id, date, content, created_at, updated_at FROM entries').all() as
+    Array<Record<string, unknown>>;
+  const device = getDeviceId(d);
+
+  d.exec('BEGIN');
+  try {
+    d.exec('DROP TABLE IF EXISTS entries');
+    d.exec(`
+      CREATE TABLE entries (
+        id TEXT PRIMARY KEY,
+        date TEXT NOT NULL,
+        content TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);
+    `);
+    const ins = d.prepare(
+      'INSERT INTO entries (id, date, content, device_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    );
+    for (const r of rows) {
+      ins.run(
+        String(randomUUID()),
+        String(r.date),
+        String(r.content),
+        String(device),
+        String(r.created_at),
+        String(r.updated_at),
+        null,
+      );
+    }
+    d.exec('COMMIT');
+  } catch (e) {
+    d.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+function getDeviceId(d: DatabaseSync): string {
+  const row = d.prepare("SELECT value FROM meta WHERE key = 'device_id'").get() as
+    | { value: string }
+    | undefined;
+  if (row?.value) return row.value;
+  const id = randomUUID();
+  d.prepare("INSERT INTO meta (key, value) VALUES ('device_id', ?)").run(id);
+  return id;
 }
 
 function getDb(): DatabaseSync {
@@ -50,36 +119,43 @@ const nowIso = () => new Date().toISOString();
 
 function rowToEntry(row: Record<string, unknown>): Entry {
   return {
-    id: Number(row.id),
+    id: String(row.id),
     date: String(row.date),
     content: String(row.content),
+    deviceId: row.device_id ? String(row.device_id) : undefined,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
+    deletedAt: row.deleted_at ? String(row.deleted_at) : null,
   };
 }
 
+/** 读接口统一排除已删除(墓碑)的记录。 */
+const NOT_DELETED = 'deleted_at IS NULL';
+
 export function listEntriesByDate(date: string): Entry[] {
   const rows = getDb()
-    .prepare('SELECT * FROM entries WHERE date = ? ORDER BY created_at ASC, id ASC')
+    .prepare(`SELECT * FROM entries WHERE date = ? AND ${NOT_DELETED} ORDER BY created_at ASC, id ASC`)
     .all(date) as Record<string, unknown>[];
   return rows.map(rowToEntry);
 }
 
 export function listEntriesByMonth(month: string): Entry[] {
   const rows = getDb()
-    .prepare('SELECT * FROM entries WHERE date LIKE ? ORDER BY date ASC, created_at ASC, id ASC')
+    .prepare(
+      `SELECT * FROM entries WHERE date LIKE ? AND ${NOT_DELETED} ORDER BY date ASC, created_at ASC, id ASC`,
+    )
     .all(`${month}-%`) as Record<string, unknown>[];
   return rows.map(rowToEntry);
 }
 
 export function listAllEntries(): Entry[] {
   const rows = getDb()
-    .prepare('SELECT * FROM entries ORDER BY date ASC, created_at ASC, id ASC')
+    .prepare(`SELECT * FROM entries WHERE ${NOT_DELETED} ORDER BY date ASC, created_at ASC, id ASC`)
     .all() as Record<string, unknown>[];
   return rows.map(rowToEntry);
 }
 
-export function getEntry(id: number): Entry | null {
+export function getEntry(id: string): Entry | null {
   const row = getDb().prepare('SELECT * FROM entries WHERE id = ?').get(id) as
     | Record<string, unknown>
     | undefined;
@@ -88,34 +164,50 @@ export function getEntry(id: number): Entry | null {
 
 export function createEntry(input: EntryCreateInput): Entry {
   const ts = nowIso();
-  const res = getDb()
-    .prepare('INSERT INTO entries (date, content, created_at, updated_at) VALUES (?, ?, ?, ?)')
-    .run(input.date, input.content, ts, ts);
-  const id = Number(res.lastInsertRowid);
+  const id = randomUUID();
+  const device = getDeviceId(getDb());
+  getDb()
+    .prepare(
+      'INSERT INTO entries (id, date, content, device_id, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    )
+    .run(id, input.date, input.content, device, ts, ts, null);
   return {
     id,
     date: input.date,
     content: input.content,
+    deviceId: device,
     createdAt: ts,
     updatedAt: ts,
+    deletedAt: null,
   };
 }
 
-export function updateEntry(id: number, input: EntryUpdateInput): Entry | null {
+export function updateEntry(id: string, input: EntryUpdateInput): Entry | null {
   const existing = getEntry(id);
   if (!existing) return null;
   const date = input.date ?? existing.date;
   const content = input.content ?? existing.content;
   const ts = nowIso();
+  const device = getDeviceId(getDb());
   getDb()
-    .prepare('UPDATE entries SET date = ?, content = ?, updated_at = ? WHERE id = ?')
-    .run(date, content, ts, id);
+    .prepare('UPDATE entries SET date = ?, content = ?, device_id = ?, updated_at = ? WHERE id = ?')
+    .run(date, content, device, ts, id);
   return getEntry(id);
 }
 
-export function deleteEntry(id: number): boolean {
-  const res = getDb().prepare('DELETE FROM entries WHERE id = ?').run(id);
+/** 软删除:写墓碑(deleted_at),同步时据此传播删除,而非物理删除。 */
+export function deleteEntry(id: string): boolean {
+  const ts = nowIso();
+  const res = getDb()
+    .prepare('UPDATE entries SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
+    .run(ts, ts, id);
   return res.changes > 0;
+}
+
+/** 彻底清理已删除条目(供未来手动/归档使用)。 */
+export function purgeDeleted(): number {
+  const res = getDb().prepare('DELETE FROM entries WHERE deleted_at IS NOT NULL').run();
+  return Number(res.changes);
 }
 
 /** 转义 LIKE 通配符,实现字面量子串搜索。 */
@@ -129,7 +221,7 @@ export function searchEntries(query: string): SearchResult[] {
   const pattern = `%${escapeLike(needle)}%`;
   const rows = getDb()
     .prepare(
-      "SELECT * FROM entries WHERE content LIKE ? ESCAPE '\\' ORDER BY date DESC, id DESC LIMIT 100",
+      `SELECT * FROM entries WHERE content LIKE ? ESCAPE '\\' AND ${NOT_DELETED} ORDER BY date DESC, id DESC LIMIT 100`,
     )
     .all(pattern) as Record<string, unknown>[];
 
@@ -141,7 +233,7 @@ export function searchEntries(query: string): SearchResult[] {
     const snippet =
       (start > 0 ? '…' : '') + content.slice(start, end) + (end < content.length ? '…' : '');
     return {
-      id: Number(row.id),
+      id: String(row.id),
       date: String(row.date),
       content,
       snippet,
@@ -151,9 +243,7 @@ export function searchEntries(query: string): SearchResult[] {
 
 /** 计算当月日记的内容指纹,用于判断小结是否需要重新生成。 */
 export function entriesHash(entries: Entry[]): string {
-  const payload = entries
-    .map((e) => `${e.id}|${e.updatedAt}|${e.content}`)
-    .join('\n');
+  const payload = entries.map((e) => `${e.id}|${e.updatedAt}|${e.content}`).join('\n');
   return createHash('sha256').update(payload).digest('hex');
 }
 

@@ -689,3 +689,66 @@ a {
     font-size: 14px;
   }
 }
+
+/* ===== 设置模态框(日记服务器地址) ===== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(40, 32, 22, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 50;
+}
+
+.modal {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 8px 40px rgba(40, 30, 20, 0.2);
+  max-width: 460px;
+  width: 100%;
+  padding: 22px;
+}
+
+.modal-title {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.modal-hint {
+  color: var(--ink-soft);
+  font-size: 14px;
+  margin: 0 0 16px;
+  line-height: 1.6;
+}
+
+.modal-hint code {
+  background: #f2ede4;
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-size: 13px;
+}
+
+.settings-input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 11px 14px;
+  font-size: 16px;
+  font-family: var(--font);
+  color: var(--ink);
+  outline: none;
+}
+
+.settings-input:focus {
+  border-color: var(--accent);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}

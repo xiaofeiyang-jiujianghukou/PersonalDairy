@@ -5,13 +5,19 @@
 
 /** 一条日记(同一日期可有多条,如早/晚各一条) */
 export interface Entry {
-  id: number;
+  /** 全局唯一 ID(UUID v4),由写入设备生成,多端不撞号 */
+  id: string;
   /** 本地日期,格式 YYYY-MM-DD */
   date: string;
   /** Markdown 正文 */
   content: string;
+  /** 最后写入的设备标识(同步用) */
+  deviceId?: string;
   createdAt: string;
+  /** 最后修改时间(同步用 last-write-wins 依据) */
   updatedAt: string;
+  /** 删除墓碑:非空表示已删除(同步时传播删除,不真删) */
+  deletedAt?: string | null;
 }
 
 export interface EntryCreateInput {
@@ -44,7 +50,7 @@ export interface SummaryReadResult {
 }
 
 export interface SearchResult {
-  id: number;
+  id: string;
   date: string;
   content: string;
   /** 命中位置附近的摘录片段 */

@@ -39,6 +39,8 @@ const app = Fastify({ logger: true });
 // 允许本机 / 局域网前端访问(本地优先应用,不做鉴权,数据只在你自己的机器上)。
 await app.register(cors, { origin: true });
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // ---------- 健康检查 ----------
 app.get('/api/health', async () => ({
   ok: true,
@@ -63,8 +65,8 @@ app.get('/api/entries', async (req, reply) => {
 });
 
 app.get('/api/entries/:id', async (req, reply) => {
-  const id = Number((req.params as { id: string }).id);
-  if (!Number.isInteger(id)) return reply.code(400).send({ error: '非法 ID' });
+  const id = (req.params as { id: string }).id;
+  if (!UUID_RE.test(id)) return reply.code(400).send({ error: '非法 ID' });
   const entry = getEntry(id);
   if (!entry) return reply.code(404).send({ error: '没有这条日记' });
   return entry;
@@ -82,8 +84,8 @@ app.post('/api/entries', async (req, reply) => {
 });
 
 app.patch('/api/entries/:id', async (req, reply) => {
-  const id = Number((req.params as { id: string }).id);
-  if (!Number.isInteger(id)) return reply.code(400).send({ error: '非法 ID' });
+  const id = (req.params as { id: string }).id;
+  if (!UUID_RE.test(id)) return reply.code(400).send({ error: '非法 ID' });
   const body = req.body as Partial<EntryUpdateInput>;
   if (body.date !== undefined && !DATE_RE.test(body.date)) {
     return reply.code(400).send({ error: '日期格式应为 YYYY-MM-DD' });
@@ -97,8 +99,8 @@ app.patch('/api/entries/:id', async (req, reply) => {
 });
 
 app.delete('/api/entries/:id', async (req, reply) => {
-  const id = Number((req.params as { id: string }).id);
-  if (!Number.isInteger(id)) return reply.code(400).send({ error: '非法 ID' });
+  const id = (req.params as { id: string }).id;
+  if (!UUID_RE.test(id)) return reply.code(400).send({ error: '非法 ID' });
   if (!deleteEntry(id)) return reply.code(404).send({ error: '没有这条日记' });
   return { ok: true };
 });

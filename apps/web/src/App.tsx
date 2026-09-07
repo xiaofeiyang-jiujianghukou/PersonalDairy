@@ -3,6 +3,8 @@ import TodayView from './views/TodayView';
 import MonthView from './views/MonthView';
 import DayView from './views/DayView';
 import SearchView from './views/SearchView';
+import SettingsModal from './components/SettingsModal';
+import { exportUrl } from './api';
 
 type View =
   | { kind: 'today' }
@@ -12,6 +14,7 @@ type View =
 
 export default function App() {
   const [view, setView] = useState<View>({ kind: 'today' });
+  const [showSettings, setShowSettings] = useState(false);
 
   return (
     <div className="app">
@@ -36,7 +39,10 @@ export default function App() {
           >
             搜索
           </button>
-          <a className="export-link" href="/api/export" title="导出全部日记为 Markdown">
+          <button onClick={() => setShowSettings(true)} title="配置日记服务器">
+            服务器
+          </button>
+          <a className="export-link" href={exportUrl()} title="导出全部日记为 Markdown">
             导出
           </a>
         </nav>
@@ -44,23 +50,20 @@ export default function App() {
 
       <main className="main">
         {view.kind === 'today' && (
-          <TodayView
-            onOpenDay={(date) => setView({ kind: 'day', date })}
-          />
+          <TodayView onOpenDay={(date) => setView({ kind: 'day', date })} />
         )}
         {view.kind === 'month' && (
           <MonthView onOpenDay={(date) => setView({ kind: 'day', date })} />
         )}
         {view.kind === 'day' && (
-          <DayView
-            date={view.date}
-            onBack={() => setView({ kind: 'month' })}
-          />
+          <DayView date={view.date} onBack={() => setView({ kind: 'month' })} />
         )}
         {view.kind === 'search' && (
           <SearchView onOpenDay={(date) => setView({ kind: 'day', date })} />
         )}
       </main>
+
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   );
 }
