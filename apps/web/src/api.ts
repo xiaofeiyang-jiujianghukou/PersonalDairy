@@ -7,8 +7,9 @@ import type {
   SummaryReadResult,
 } from '@diary/shared';
 import { reconcileFull } from '@diary/shared/sync';
-import { IdbBackend, createLocalApi, getImage, putImage, type LocalBackend } from './lib/localStore';
-import { exportLocalImages, importImageDataUrl, normalizeUploadRefs } from './lib/image';
+import { extractDiaryImgRefs } from '@diary/shared/images';
+import { IdbBackend, createLocalApi, listImageIds, type LocalBackend } from './lib/localStore';
+import { exportImagesFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
 
 const API_BASE_KEY = 'diary.apiBase';
 const SYNC_PARTNER_KEY = 'diary.syncPartner';
@@ -41,6 +42,24 @@ export function getSyncPartner(): string {
 export function setSyncPartner(value: string): void {
   try {
     localStorage.setItem(SYNC_PARTNER_KEY, value.trim());
+  } catch {
+    /* ignore */
+  }
+}
+
+const LAST_SYNC_KEY = 'diary.lastSyncAt';
+/** 读同步水位(上次同步的时间戳;空=未同步)。 */
+export function getLastSyncAt(): string {
+  try {
+    return (localStorage.getItem(LAST_SYNC_KEY) ?? '').trim();
+  } catch {
+    return '';
+  }
+}
+/** 写同步水位。 */
+export function setLastSyncAt(value: string): void {
+  try {
+    localStorage.setItem(LAST_SYNC_KEY, value);
   } catch {
     /* ignore */
   }
@@ -113,31 +132,36 @@ export function exportUrl(): string {
 }
 
 /**
- * 本地优先同步:把本机(含墓碑)推给配对的电脑,再拉取对方改动,LWW 合并后写回本机。
+ * 本地优先同步(增量):只交换自上次同步(since)以来有改动的条目与图片,避免全量重传。
+ * 数据越多越省:单次同步只传"这次改动",而非整年历史。
  */
 export async function syncNow(): Promise<{ applied: number; pulled: number; partner: string }> {
   const partner = getSyncPartner();
   if (!partner) throw new Error('尚未配对电脑');
   if (!isPhoneLocal()) throw new Error('仅本地模式支持同步');
 
+  const since = getLastSyncAt();
   const ours = await getLocalBackend().getAll(); // 含墓碑
-  const ourImages = await exportLocalImages(); // 本机图片库
+  const delta = ours.filter((e) => !since || e.updatedAt > since); // 增量条目
+
+  // 只推送增量条目引用到的图片
+  const deltaImgIds = new Set<string>();
+  for (const e of delta) for (const id of extractDiaryImgRefs(e.content)) deltaImgIds.add(id);
+  const pushImages = await exportImagesFor([...deltaImgIds]);
+  const localImageIds = await listImageIds(); // 本机全部图片 id,让服务端只补缺失的
+
   const res = await httpFrom<{
     applied?: number;
     entries: Entry[];
     images?: Array<{ id: string; dataUrl: string }>;
   }>(partner, '/api/sync', {
     method: 'POST',
-    body: JSON.stringify({
-      entries: ours,
-      images: ourImages,
-      localImageIds: ourImages.map((i) => i.id),
-    }),
+    body: JSON.stringify({ since, entries: delta, images: pushImages, localImageIds }),
   });
-  // 拉取服务器端缺失的图片,写入本机图片库
-  for (const img of res.images ?? []) {
-    if (img?.dataUrl) await importImageDataUrl(img.dataUrl);
-  }
+
+  // 拉取服务端缺失的图片
+  for (const img of res.images ?? []) if (img?.dataUrl) await importImageDataUrl(img.dataUrl);
+
   const theirs: Entry[] = res.entries ?? [];
   const reconciled = reconcileFull(ours, theirs);
   const localMap = new Map(ours.map((e) => [e.id, e]));
@@ -147,7 +171,8 @@ export async function syncNow(): Promise<{ applied: number; pulled: number; part
     if (!cur || e.updatedAt > cur.updatedAt) toWrite.push(e);
   }
   await getLocalBackend().put(toWrite);
-  // 归一化本机所有仍引用旧式 /api/uploads 的条目(含未参与合并改写的,如手机自己写的),从 partner 拉图、哈希、改写
+
+  // 归一化残留旧引用
   const allLocal = await getLocalBackend().getAll();
   const legacy = allLocal.filter((e) => /\/api\/uploads\//.test(e.content));
   if (legacy.length) {
@@ -158,6 +183,11 @@ export async function syncNow(): Promise<{ applied: number; pulled: number; part
     );
     await getLocalBackend().put(legacy);
   }
+
+  // 推进同步水位到本机所有条目的最新时间
+  const newMax = allLocal.reduce((mx, e) => (e.updatedAt > mx ? e.updatedAt : mx), since || '');
+  setLastSyncAt(newMax);
+
   return { applied: res.applied ?? 0, pulled: toWrite.length, partner };
 }
 

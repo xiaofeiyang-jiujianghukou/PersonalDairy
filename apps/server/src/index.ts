@@ -126,10 +126,12 @@ app.get('/api/search', async (req) => {
   return searchEntries(q.trim());
 });
 
-// ---------- 多端同步 ----------
-// 另一设备把它的条目(含墓碑)与图片推过来;按 LWW 合并后,返回本机全量(含墓碑)+ 对方缺失的图片。
+// ---------- 多端同步(增量) ----------
+// 对方把"自上次同步以来的增量条目(含墓碑)+ 新增图片"推过来;按 LWW 合并后,
+// 只返回"对方上次同步之后本机发生的增量条目 + 对方缺失的图片",而非全量。
 app.post('/api/sync', async (req, reply) => {
   const body = req.body as {
+    since?: string;
     entries?: Entry[];
     images?: Array<{ id?: string; dataUrl?: string }>;
     localImageIds?: string[];
@@ -138,6 +140,7 @@ app.post('/api/sync', async (req, reply) => {
   if (!Array.isArray(entries) || entries.length > 100000) {
     return reply.code(400).send({ error: '无效的同步负载' });
   }
+  const since = typeof body?.since === 'string' && body.since ? body.since : '';
   const applied = applySyncedEntries(entries);
 
   // 存入对方送来的图片(按内容哈希,幂等去重)
@@ -149,7 +152,7 @@ app.post('/api/sync', async (req, reply) => {
     saveImage(config.imagesDir, id, decoded.bytes);
   }
 
-  // 返回本机有、但对方没有的图片
+  // 返回本机有、但对方没有的图片(逐次"补齐"缺图,已拥有的不再重复传)
   const have = new Set<string>(body?.localImageIds ?? []);
   const missing = listImageIds(config.imagesDir)
     .filter((id) => !have.has(id))
@@ -159,11 +162,13 @@ app.post('/api/sync', async (req, reply) => {
     })
     .filter(Boolean);
 
-  // 归一化旧式 /api/uploads 引用→ diary-img,并把对应图存入 imagesDir(随 missing 一起回传)
-  const syncedEntries = getAllEntriesForSync().map((e) => ({
-    ...e,
-    content: normalizeLegacyImageRefs(e.content, config.imagesDir, config.uploadsDir),
-  }));
+  // 只返回对方上次同步(since)之后有改动的增量条目(含墓碑);归一化旧引用
+  const syncedEntries = getAllEntriesForSync()
+    .filter((e) => !since || e.updatedAt > since)
+    .map((e) => ({
+      ...e,
+      content: normalizeLegacyImageRefs(e.content, config.imagesDir, config.uploadsDir),
+    }));
 
   return { applied, entries: syncedEntries, images: missing };
 });

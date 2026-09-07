@@ -76,6 +76,16 @@ export function allowImageUrlTransform(value: string): string {
   return url;
 }
 
+/** 按 id 导出图片(供同步推送增量引用到的图)。 */
+export async function exportImagesFor(ids: string[]): Promise<Array<{ id: string; dataUrl: string }>> {
+  const out: Array<{ id: string; dataUrl: string }> = [];
+  for (const id of ids) {
+    const blob = await getImage(id);
+    if (blob) out.push({ id, dataUrl: await blobToDataUrl(blob) });
+  }
+  return out;
+}
+
 /** 把本机图片库导出为 {id,dataUrl} 列表(供同步推送)。 */
 export async function exportLocalImages(): Promise<Array<{ id: string; dataUrl: string }>> {
   const ids = await listImageIds();
