@@ -39,27 +39,20 @@
 在**具备 Android SDK / Android Studio 的电脑**上,于本仓库目录执行:
 
 ```bash
-# 1) 构建前端(产物在 apps/web/dist)
-pnpm install && pnpm build
-
-# 2) 在 web 包内引入 Capacitor
-cd apps/web
-pnpm add @capacitor/core
-pnpm add -D @capacitor/cli @capacitor/android
-
-# 3) 初始化并生成安卓工程(会生成 android/ 目录)
-npx cap init "我的日记" "com.yourname.diary" --web-dir=dist
-npx cap add android
-
-# 4) 同步前端产物并构建 APK
-npx cap sync
-cd android && ./gradlew assembleDebug
-# 产物: android/app/build/outputs/apk/debug/app-debug.apk
+# 1) 构建前端并同步进安卓工程(android/ 已在本仓库内,免 cap init/add)
+pnpm install
+pnpm --filter @diary/web apk:debug
+# 产物: apps/web/android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+前置条件(仅需一次):
+- 安装 **Android Studio**(含 Android SDK 与 JDK 17),在 `android/local.properties` 写入
+  `sdk.dir=/你的/Android/Sdk 路径`(或设置 `ANDROID_HOME` 环境变量);
+- 也可用 Android Studio 直接打开 `apps/web/android/` 目录点「Run」。
 
 把 APK 传到 Mate70(鸿蒙 4.3 兼容安卓)安装即可。
 
-> 说明:数据库在手机端需要一个本地存储。短期可用 Capacitor SQLite 插件复用同一套 SQLite 代码;APK 内嵌本地 Web 服务方案另见同步架构。
+> 说明:当前 APK 是可安装的 Web 外壳(打包了现有界面)。要让它在手机上**真正本地存数据 + 同步**,还需按路线图推进阶段⑤(手机本地库)与同步引擎。
 
 ## 四、"手机本地数据 + 多端同步"架构设计(路线图主干)
 
