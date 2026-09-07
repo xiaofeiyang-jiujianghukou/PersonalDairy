@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import type { Entry } from '../types';
 import { api } from '../api';
 import { blocksToMarkdown, parseBlocks, type Block } from '../lib/blocks';
+import { allowImageUrlTransform } from '../lib/image';
 import BlocksEditor from './BlocksEditor';
 
 export default function EntryItem({
@@ -79,7 +80,9 @@ export default function EntryItem({
         <BlocksEditor blocks={draftBlocks} onChange={setDraftBlocks} />
       ) : (
         <div className="markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.content}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={allowImageUrlTransform}>
+            {entry.content}
+          </ReactMarkdown>
         </div>
       )}
     </article>

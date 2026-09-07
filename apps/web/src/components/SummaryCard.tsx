@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { MonthSummary } from '../types';
 import { api } from '../api';
+import { allowImageUrlTransform } from '../lib/image';
 
 export default function SummaryCard({ month }: { month: string }) {
   const [summary, setSummary] = useState<MonthSummary | null>(null);
@@ -64,7 +65,9 @@ export default function SummaryCard({ month }: { month: string }) {
       )}
       {summary && (
         <div className="markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary.content}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={allowImageUrlTransform}>
+            {summary.content}
+          </ReactMarkdown>
         </div>
       )}
     </div>
