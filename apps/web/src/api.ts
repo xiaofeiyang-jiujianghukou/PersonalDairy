@@ -146,13 +146,18 @@ export async function syncNow(): Promise<{ applied: number; pulled: number; part
     const cur = localMap.get(e.id);
     if (!cur || e.updatedAt > cur.updatedAt) toWrite.push(e);
   }
-  // 归一化本机可能残留的旧式 /api/uploads 引用(从 partner 拉取、哈希、改写),使其也能显示
-  await Promise.all(
-    toWrite.map(async (e) => {
-      if (/\/api\/uploads\//.test(e.content)) e.content = await normalizeUploadRefs(e.content, partner);
-    }),
-  );
   await getLocalBackend().put(toWrite);
+  // 归一化本机所有仍引用旧式 /api/uploads 的条目(含未参与合并改写的,如手机自己写的),从 partner 拉图、哈希、改写
+  const allLocal = await getLocalBackend().getAll();
+  const legacy = allLocal.filter((e) => /\/api\/uploads\//.test(e.content));
+  if (legacy.length) {
+    await Promise.all(
+      legacy.map(async (e) => {
+        e.content = await normalizeUploadRefs(e.content, partner);
+      }),
+    );
+    await getLocalBackend().put(legacy);
+  }
   return { applied: res.applied ?? 0, pulled: toWrite.length, partner };
 }
 
