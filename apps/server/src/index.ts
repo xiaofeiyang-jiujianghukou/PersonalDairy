@@ -48,7 +48,7 @@ import { detectImageMime } from '@diary/shared/images';
 const config = loadConfig();
 initDb(config.dbPath);
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, bodyLimit: 64 * 1024 * 1024 }); // 64MB,容纳含图片的同步负载
 
 // 允许本机 / 局域网前端访问(本地优先应用,不做鉴权,数据只在你自己的机器上)。
 await app.register(cors, { origin: true });
