@@ -5,6 +5,7 @@ import type { Entry } from '../types';
 import { api } from '../api';
 import { blocksToMarkdown, parseBlocks, type Block } from '../lib/blocks';
 import { allowImageUrlTransform } from '../lib/image';
+import { scheduleSync } from '../lib/syncAuto';
 import ResolvedImage from './ResolvedImage';
 import BlocksEditor from './BlocksEditor';
 
@@ -39,6 +40,7 @@ export default function EntryItem({
       await api.update(entry.id, { content: md });
       setEditing(false);
       onChanged();
+      scheduleSync();
     } catch (e) {
       alert((e as Error).message);
     } finally {
@@ -52,6 +54,7 @@ export default function EntryItem({
     try {
       await api.remove(entry.id);
       onDeleted();
+      scheduleSync();
     } catch (e) {
       alert((e as Error).message);
       setBusy(false);

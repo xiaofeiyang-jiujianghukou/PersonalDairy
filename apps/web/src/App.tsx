@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import TodayView from './views/TodayView';
 import MonthView from './views/MonthView';
 import DayView from './views/DayView';
@@ -6,6 +6,7 @@ import SearchView from './views/SearchView';
 import SettingsModal from './components/SettingsModal';
 import SyncModal from './components/SyncModal';
 import { exportUrl } from './api';
+import { autoSync } from './lib/syncAuto';
 
 type View =
   | { kind: 'today' }
@@ -17,6 +18,11 @@ export default function App() {
   const [view, setView] = useState<View>({ kind: 'today' });
   const [showSettings, setShowSettings] = useState(false);
   const [showSync, setShowSync] = useState(false);
+
+  // 打开应用:手机本地优先且已配对 → 自动同步一次(双向增量)
+  useEffect(() => {
+    void autoSync();
+  }, []);
 
   return (
     <div className="app">

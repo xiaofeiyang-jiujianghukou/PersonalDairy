@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api } from '../api';
 import { blocksToMarkdown, newId, type Block } from '../lib/blocks';
+import { scheduleSync } from '../lib/syncAuto';
 import BlocksEditor from './BlocksEditor';
 
 export default function Composer({
@@ -21,6 +22,7 @@ export default function Composer({
       await api.create({ date, content: md });
       setBlocks([{ id: newId(), kind: 'text', text: '' }]);
       onSaved();
+      scheduleSync();
     } catch (e) {
       alert((e as Error).message);
     } finally {
