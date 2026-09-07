@@ -44,6 +44,7 @@ import {
   normalizeLegacyImageRefs,
 } from './images.js';
 import { detectImageMime } from '@diary/shared/images';
+import { decryptObject, encryptObject, generateSyncKey } from '@diary/shared/syncCrypto';
 
 const config = loadConfig();
 initDb(config.dbPath);
@@ -126,16 +127,39 @@ app.get('/api/search', async (req) => {
   return searchEntries(q.trim());
 });
 
-// ---------- 多端同步(增量) ----------
-// 对方把"自上次同步以来的增量条目(含墓碑)+ 新增图片"推过来;按 LWW 合并后,
-// 只返回"对方上次同步之后本机发生的增量条目 + 对方缺失的图片",而非全量。
+// ---------- 多端同步(增量,端到端加密) ----------
+// 请求/响应的增量数据用"同步密钥"AES-GCM 加密(仅两台设备能解);支持旧版明文(兼容)。
+interface SyncBody {
+  since?: string;
+  entries?: Entry[];
+  images?: Array<{ id?: string; dataUrl?: string }>;
+  localImageIds?: string[];
+}
+
+function getSyncKey(): string {
+  const fp = path.join(config.dataDir, 'synckey');
+  if (fs.existsSync(fp)) return fs.readFileSync(fp, 'utf8').trim();
+  const k = generateSyncKey();
+  fs.mkdirSync(config.dataDir, { recursive: true });
+  fs.writeFileSync(fp, k);
+  return k;
+}
+
 app.post('/api/sync', async (req, reply) => {
-  const body = req.body as {
-    since?: string;
-    entries?: Entry[];
-    images?: Array<{ id?: string; dataUrl?: string }>;
-    localImageIds?: string[];
-  } | null;
+  const raw = req.body as { enc?: { iv: string; data: string } } | SyncBody | null;
+  const key = getSyncKey();
+  const encrypted = Boolean(raw && (raw as { enc?: unknown }).enc);
+  let body: SyncBody | null;
+  if (encrypted) {
+    try {
+      body = await decryptObject<SyncBody>(key, (raw as { enc: { iv: string; data: string } }).enc);
+    } catch {
+      return reply.code(401).send({ error: '同步密钥不匹配' });
+    }
+  } else {
+    body = raw as SyncBody;
+  }
+
   const entries = body?.entries;
   if (!Array.isArray(entries) || entries.length > 100000) {
     return reply.code(400).send({ error: '无效的同步负载' });
@@ -152,7 +176,7 @@ app.post('/api/sync', async (req, reply) => {
     saveImage(config.imagesDir, id, decoded.bytes);
   }
 
-  // 返回本机有、但对方没有的图片(逐次"补齐"缺图,已拥有的不再重复传)
+  // 返回本机有、但对方没有的图片(逐次补齐,已拥有的不再重复传)
   const have = new Set<string>(body?.localImageIds ?? []);
   const missing = listImageIds(config.imagesDir)
     .filter((id) => !have.has(id))
@@ -170,7 +194,8 @@ app.post('/api/sync', async (req, reply) => {
       content: normalizeLegacyImageRefs(e.content, config.imagesDir, config.uploadsDir),
     }));
 
-  return { applied, entries: syncedEntries, images: missing };
+  const result = { applied, entries: syncedEntries, images: missing };
+  return encrypted ? { enc: await encryptObject(key, result) } : result;
 });
 
 // ---------- 扫码配对:给出本机局域网地址的二维码与文本 ----------
@@ -187,8 +212,10 @@ function lanBaseUrl(): string {
 
 app.get('/api/qr', async (_req, reply) => {
   const url = lanBaseUrl();
-  const dataUrl = await QRCode.toDataURL(url, { margin: 1, width: 360 });
-  return { url, dataUrl };
+  const key = getSyncKey();
+  const qrStr = `${url}\n${key}`;
+  const dataUrl = await QRCode.toDataURL(qrStr, { margin: 1, width: 360 });
+  return { url, dataUrl, key };
 });
 
 // ---------- 月度小结 ----------

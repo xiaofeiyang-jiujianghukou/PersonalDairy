@@ -8,7 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./sync": "./src/sync.ts",
-    "./images": "./src/images.ts"
+    "./images": "./src/images.ts",
+    "./syncCrypto": "./src/syncCrypto.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

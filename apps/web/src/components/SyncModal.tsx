@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import jsQR from 'jsqr';
-import { isPhoneMode, getSyncPartner, setSyncPartner, syncNow } from '../api';
+import { isPhoneMode, getSyncPartner, setSyncPartner, setSyncKey, syncNow } from '../api';
 
 export default function SyncModal({ onClose }: { onClose: () => void }) {
   const phoneMode = isPhoneMode();
@@ -63,10 +63,14 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
           const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
           const code = jsQR(img.data, img.width, img.height);
           if (code && code.data) {
-            setSyncPartner(code.data);
-            setPartner(code.data);
+            const [u, k] = code.data.split('\n');
+            if (u) {
+              setSyncPartner(u);
+              setPartner(u);
+            }
+            if (k) setSyncKey(k);
             stopCamera();
-            setMsg(`已配对:${code.data}`);
+            setMsg(`已配对:${u ?? code.data}`);
             return;
           }
         }

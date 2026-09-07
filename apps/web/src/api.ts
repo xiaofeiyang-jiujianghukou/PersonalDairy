@@ -8,6 +8,7 @@ import type {
 } from '@diary/shared';
 import { reconcileFull } from '@diary/shared/sync';
 import { extractDiaryImgRefs } from '@diary/shared/images';
+import { decryptObject, encryptObject } from '@diary/shared/syncCrypto';
 import { IdbBackend, createLocalApi, listImageIds, type LocalBackend } from './lib/localStore';
 import { exportImagesFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
 
@@ -60,6 +61,23 @@ export function getLastSyncAt(): string {
 export function setLastSyncAt(value: string): void {
   try {
     localStorage.setItem(LAST_SYNC_KEY, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+const SYNC_KEY = 'diary.syncKey';
+/** 读同步密钥(扫码配对时从二维码获取)。 */
+export function getSyncKey(): string {
+  try {
+    return (localStorage.getItem(SYNC_KEY) ?? '').trim();
+  } catch {
+    return '';
+  }
+}
+export function setSyncKey(value: string): void {
+  try {
+    localStorage.setItem(SYNC_KEY, value.trim());
   } catch {
     /* ignore */
   }
@@ -150,14 +168,25 @@ export async function syncNow(): Promise<{ applied: number; pulled: number; part
   const pushImages = await exportImagesFor([...deltaImgIds]);
   const localImageIds = await listImageIds(); // 本机全部图片 id,让服务端只补缺失的
 
-  const res = await httpFrom<{
-    applied?: number;
-    entries: Entry[];
-    images?: Array<{ id: string; dataUrl: string }>;
-  }>(partner, '/api/sync', {
-    method: 'POST',
-    body: JSON.stringify({ since, entries: delta, images: pushImages, localImageIds }),
-  });
+  const syncKey = getSyncKey();
+  const payload = { since, entries: delta, images: pushImages, localImageIds };
+
+  // 有同步密钥(扫码配对获得)则端到端加密;否则明文(兼容)
+  let res: { applied?: number; entries: Entry[]; images?: Array<{ id: string; dataUrl: string }> };
+  if (syncKey) {
+    const enc = await encryptObject(syncKey, payload);
+    const r = await httpFrom<{ enc: { iv: string; data: string } }>(partner, '/api/sync', {
+      method: 'POST',
+      body: JSON.stringify({ enc }),
+    });
+    res = await decryptObject<{ applied?: number; entries: Entry[]; images?: Array<{ id: string; dataUrl: string }> }>(syncKey, r.enc);
+  } else {
+    res = await httpFrom<{ applied?: number; entries: Entry[]; images?: Array<{ id: string; dataUrl: string }> }>(
+      partner,
+      '/api/sync',
+      { method: 'POST', body: JSON.stringify(payload) },
+    );
+  }
 
   // 拉取服务端缺失的图片
   for (const img of res.images ?? []) if (img?.dataUrl) await importImageDataUrl(img.dataUrl);
