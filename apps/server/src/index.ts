@@ -41,6 +41,7 @@ import {
   saveImage,
   readImage,
   listImageIds,
+  normalizeLegacyImageRefs,
 } from './images.js';
 import { detectImageMime } from '@diary/shared/images';
 
@@ -158,7 +159,13 @@ app.post('/api/sync', async (req, reply) => {
     })
     .filter(Boolean);
 
-  return { applied, entries: getAllEntriesForSync(), images: missing };
+  // 归一化旧式 /api/uploads 引用→ diary-img,并把对应图存入 imagesDir(随 missing 一起回传)
+  const syncedEntries = getAllEntriesForSync().map((e) => ({
+    ...e,
+    content: normalizeLegacyImageRefs(e.content, config.imagesDir, config.uploadsDir),
+  }));
+
+  return { applied, entries: syncedEntries, images: missing };
 });
 
 // ---------- 扫码配对:给出本机局域网地址的二维码与文本 ----------

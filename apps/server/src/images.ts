@@ -53,6 +53,27 @@ export function listImageIds(imagesDir: string): string[] {
   return fs.readdirSync(imagesDir).filter((f) => /^[0-9a-f]{16,64}$/.test(f));
 }
 
+/**
+ * 把旧式 /api/uploads/<name> 引用归一化为 diary-img:<哈希>:
+ * 读取上传文件字节 → 按内容哈希存入 imagesDir → 重写引用。
+ * 无文件的引用保留原样(无法恢复)。幂等。
+ */
+export function normalizeLegacyImageRefs(
+  content: string,
+  imagesDir: string,
+  uploadsDir: string,
+): string {
+  return content.replace(/!\[[^\]]*\]\((\/api\/uploads\/[^)]+)\)/g, (_all, ref: string) => {
+    const name = path.basename(ref);
+    const fp = path.join(uploadsDir, name);
+    if (!fs.existsSync(fp)) return `![图片](${ref})`; // 无文件,保留
+    const bytes = fs.readFileSync(fp);
+    const id = createHash('sha256').update(bytes).digest('hex');
+    saveImage(imagesDir, id, bytes);
+    return `![图片](diary-img:${id})`;
+  });
+}
+
 /** 提取正文中的本地图片引用:新式 diary-img:<hash> 与旧式 /api/uploads/xxx。 */
 export function extractImageRefs(content: string): string[] {
   const refs: string[] = [];

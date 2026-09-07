@@ -106,4 +106,39 @@ export async function importImageDataUrl(dataUrl: string): Promise<string> {
   return id;
 }
 
+/**
+ * 归一化旧式 /api/uploads/<name> 引用 → diary-img:<哈希>:
+ * 通过 partner 拉取图片字节,按内容哈希存入本机图片库,并重写引用。
+ * 拉取失败或无文件则保留原样。
+ */
+export async function normalizeUploadRefs(content: string, baseUrl: string): Promise<string> {
+  const re = /!\[[^\]]*\]\((\/api\/uploads\/[^)]+)\)/g;
+  let m: RegExpExecArray | null;
+  let out = '';
+  let last = 0;
+  re.lastIndex = 0;
+  while ((m = re.exec(content)) !== null) {
+    out += content.slice(last, m.index);
+    const ref = m[1]!;
+    let replaced = false;
+    try {
+      const res = await fetch(`${baseUrl}${ref}`);
+      if (res.ok) {
+        const blob = await res.blob();
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const id = await sha256Hex(bytes);
+        await putImage(id, blob);
+        out += `![图片](${makeDiaryImgRef(id)})`;
+        replaced = true;
+      }
+    } catch {
+      /* ignore */
+    }
+    if (!replaced) out += m[0];
+    last = m.index + m[0].length;
+  }
+  out += content.slice(last);
+  return out;
+}
+
 export { detectImageMime };
