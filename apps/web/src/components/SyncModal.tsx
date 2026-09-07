@@ -38,13 +38,20 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
   async function startScan() {
     setErr(null);
     setMsg(null);
+    // 先进入扫描态(让 <video> 先挂载),再请求相机
+    setScanning(true);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      const video = videoRef.current;
+      if (!video) {
+        stream.getTracks().forEach((t) => t.stop());
+        setScanning(false);
+        setErr('视频画布尚未就绪,请重试');
+        return;
+      }
       streamRef.current = stream;
-      const video = videoRef.current!;
       video.srcObject = stream;
       await video.play();
-      setScanning(true);
       const loop = () => {
         const v = videoRef.current;
         if (v && v.readyState === v.HAVE_ENOUGH_DATA && v.videoWidth) {
@@ -67,6 +74,7 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
       };
       rafRef.current = requestAnimationFrame(loop);
     } catch (e) {
+      setScanning(false);
       setErr((e as Error).message || '无法启动相机');
     }
   }
@@ -102,9 +110,13 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
             ) : (
               <p className="modal-hint warn">尚未配对电脑。</p>
             )}
-            {scanning && (
-              <video ref={videoRef} className="qr-video" playsInline muted />
-            )}
+            <video
+              ref={videoRef}
+              className="qr-video"
+              playsInline
+              muted
+              style={{ display: scanning ? 'block' : 'none' }}
+            />
             <div className="modal-actions">
               <button className="ghost" onClick={stopCamera} disabled={!scanning}>
                 停止
