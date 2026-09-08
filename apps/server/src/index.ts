@@ -42,6 +42,7 @@ import {
 } from './db.js';
 import { getTextProvider, getVisionProvider } from './ai/index.js';
 import { summarizeMonth } from './ai/summary.js';
+import { chatWithDiary, type CompanionMessage } from './ai/companion.js';
 import {
   entriesContainImages,
   imageIdFromDataUrl,
@@ -406,6 +407,43 @@ app.post('/api/summarize', async (req, reply) => {
   const provider = hasImages ? getVisionProvider() : getTextProvider();
   const content = await summarizeMonth(entries, provider, config.imagesDir, config.uploadsDir);
   const result = { content, model: hasImages ? config.ai.visionModel : config.ai.textModel };
+  return encrypted ? { enc: await encryptObject(key, result) } : result;
+});
+
+// ---------- 公共能力:AI 陪伴对话(自包含、可部署/上云) ----------
+// 客户端把"对话 + 相关日记背景"发来,服务端用自身 AI 密钥给出回应并返回;不落盘、不存内容。
+app.post('/api/companion', async (req, reply) => {
+  const raw = req.body as
+    | { enc?: { iv: string; data: string } }
+    | { messages?: CompanionMessage[]; context?: Entry[] }
+    | null;
+  const key = getSyncKey();
+  const encrypted = Boolean(raw && (raw as { enc?: unknown }).enc);
+  let body: { messages?: CompanionMessage[]; context?: Entry[] };
+  if (encrypted) {
+    try {
+      body = await decryptObject<{ messages?: CompanionMessage[]; context?: Entry[] }>(
+        key,
+        (raw as { enc: { iv: string; data: string } }).enc,
+      );
+    } catch {
+      return reply.code(401).send({ error: '同步密钥不匹配' });
+    }
+  } else {
+    body = raw as { messages?: CompanionMessage[]; context?: Entry[] };
+  }
+  const messages = body?.messages;
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return reply.code(400).send({ error: '没有可对话的内容' });
+  }
+  const lastIdx = messages.map((m) => m?.content?.trim()).findLastIndex((c) => Boolean(c));
+  if (lastIdx < 0 || messages[lastIdx]?.role !== 'user') {
+    return reply.code(400).send({ error: '对话需以一条用户消息结尾' });
+  }
+  const context = Array.isArray(body?.context) ? (body.context as Entry[]) : [];
+  const provider = getTextProvider();
+  const text = await chatWithDiary(context, messages as CompanionMessage[], provider);
+  const result = { reply: text, model: config.ai.textModel };
   return encrypted ? { enc: await encryptObject(key, result) } : result;
 });
 

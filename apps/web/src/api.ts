@@ -217,6 +217,40 @@ function entriesHashSimple(entries: Entry[]): string {
 /** 供 UI 使用的统一 API(桌面=远端,手机 App=本地)。 */
 export const api = isPhoneLocal() ? (localApi as unknown as typeof remoteApi) : remoteApi;
 
+/** 陪伴对话消息。 */
+export interface CompanionMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+/**
+ * AI 陪伴对话(公共能力,与 AI 小结同构):
+ * - 手机本地优先:背景在手机本地,委托给配对的电脑(端到端加密);
+ * - 电脑:本机服务端直接生成(明文,内容只在你自己的机器上处理)。
+ */
+async function companionLocal(messages: CompanionMessage[], context: Entry[]): Promise<{ reply: string; model: string }> {
+  const partner = getSyncPartner();
+  if (!partner) throw new Error('尚未配对电脑,无法使用 AI 陪伴');
+  const syncKey = getSyncKey();
+  const payload = { messages, context };
+  const raw = await httpFrom<{ enc: { iv: string; data: string } } | { reply: string; model: string }>(
+    partner,
+    '/api/companion',
+    { method: 'POST', body: JSON.stringify(syncKey ? { enc: await encryptObject(syncKey, payload) } : payload) },
+  );
+  return syncKey
+    ? decryptObject<{ reply: string; model: string }>(syncKey, (raw as { enc: { iv: string; data: string } }).enc)
+    : (raw as { reply: string; model: string });
+}
+
+export const companionApi = {
+  chat: (messages: CompanionMessage[], context: Entry[]): Promise<{ reply: string; model: string }> =>
+    isPhoneLocal() ? companionLocal(messages, context) : http<{ reply: string; model: string }>('/api/companion', {
+      method: 'POST',
+      body: JSON.stringify({ messages, context }),
+    }),
+};
+
 /** 账号鉴权(始终走服务端,与本地优先无关)。 */
 export const authApi = {
   register: (username: string, password: string) =>

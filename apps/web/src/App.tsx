@@ -5,6 +5,7 @@ import DayView from './views/DayView';
 import SearchView from './views/SearchView';
 import SettingsModal from './components/SettingsModal';
 import SyncModal from './components/SyncModal';
+import CompanionModal from './components/CompanionModal';
 import AuthGate from './components/AuthGate';
 import { exportUrl, getToken } from './api';
 import { autoSync } from './lib/syncAuto';
@@ -20,6 +21,7 @@ export default function App() {
   const [view, setView] = useState<View>({ kind: 'today' });
   const [showSettings, setShowSettings] = useState(false);
   const [showSync, setShowSync] = useState(false);
+  const [showCompanion, setShowCompanion] = useState(false);
 
   // 打开应用:已登录后,手机本地优先且已配对 → 自动同步一次(双向增量)
   useEffect(() => {
@@ -52,6 +54,7 @@ export default function App() {
             搜索
           </button>
           <button onClick={() => setShowSync(true)} title="配对电脑并同步">配对</button>
+          <button onClick={() => setShowCompanion(true)} title="AI 陪伴对话">陪伴</button>
           <button onClick={() => setShowSettings(true)} title="配置日记服务器">服务器</button>
           <a className="export-link" href={exportUrl()} title="导出全部日记为 Markdown">
             导出
@@ -76,6 +79,7 @@ export default function App() {
 
       {showSync && <SyncModal onClose={() => setShowSync(false)} />}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {showCompanion && <CompanionModal onClose={() => setShowCompanion(false)} />}
     </div>
   );
 }

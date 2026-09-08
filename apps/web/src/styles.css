@@ -882,3 +882,57 @@ a {
   text-align: center;
   margin: 16px 0 0;
 }
+
+/* ---------- AI 陪伴 ---------- */
+.companion-modal {
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+}
+.companion-log {
+  min-height: 260px;
+  max-height: 340px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 2px;
+  margin-bottom: 12px;
+}
+.companion-msg {
+  max-width: 88%;
+  padding: 10px 14px;
+  border-radius: 14px;
+  line-height: 1.6;
+  font-size: 15px;
+}
+.companion-msg.user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.companion-msg.assistant {
+  align-self: flex-start;
+  background: #f2ede4;
+  color: var(--ink);
+  border-bottom-left-radius: 4px;
+}
+.companion-msg .markdown p {
+  margin: 0 0 0.4em;
+}
+.companion-msg .markdown p:last-child {
+  margin-bottom: 0;
+}
+.companion-input {
+  display: flex;
+  gap: 8px;
+}
+.companion-input .settings-input {
+  flex: 1;
+}
+.companion-error {
+  color: #c62828;
+  font-size: 13px;
+  margin: 0 0 8px;
+}
