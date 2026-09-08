@@ -13,6 +13,7 @@
     "dev:web": "pnpm --filter @diary/web dev",
     "build": "pnpm --filter @diary/web build",
     "start": "pnpm --filter @diary/server start",
+    "app": "pnpm build && pnpm start",
     "typecheck": "pnpm -r typecheck"
   },
   "packageManager": "pnpm@11.25.0",
