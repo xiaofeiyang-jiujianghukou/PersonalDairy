@@ -231,6 +231,14 @@ export const authApi = {
     }),
   me: () => http<{ username: string }>('/api/auth/me'),
   logout: () => http<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  // 微信式扫码登录
+  loginQr: () => http<{ qrId: string; dataUrl: string }>('/api/auth/login-qr', { method: 'POST' }),
+  loginQrPoll: (qrId: string) =>
+    http<{ status: 'pending' | 'confirmed'; token?: string; username?: string }>(
+      `/api/auth/login-qr/${qrId}`,
+    ),
+  scanConfirm: (qrId: string) =>
+    http<{ ok: boolean }>('/api/auth/scan-confirm', { method: 'POST', body: JSON.stringify({ qrId }) }),
 };
 
 /** 导出下载地址(远端模式带基址;本地模式返回 '' 表示不支持)。 */

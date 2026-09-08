@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import jsQR from 'jsqr';
-import { isPhoneMode, getSyncPartner, setSyncPartner, setSyncKey, syncNow } from '../api';
+import { authApi, isPhoneMode, getSyncPartner, setSyncPartner, setSyncKey, syncNow } from '../api';
 
 export default function SyncModal({ onClose }: { onClose: () => void }) {
   const phoneMode = isPhoneMode();
@@ -63,6 +63,20 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
           const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
           const code = jsQR(img.data, img.width, img.height);
           if (code && code.data) {
+            if (code.data.startsWith('diary-login:')) {
+              const qrId = code.data.slice('diary-login:'.length);
+              stopCamera();
+              setMsg('正在确认电脑登录…');
+              void (async () => {
+                try {
+                  await authApi.scanConfirm(qrId);
+                  setMsg('已确认:电脑登录成功 ✅');
+                } catch (e) {
+                  setErr((e as Error).message);
+                }
+              })();
+              return;
+            }
             const [u, k] = code.data.split('\n');
             if (u) {
               setSyncPartner(u);
