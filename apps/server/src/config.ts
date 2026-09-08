@@ -37,9 +37,9 @@ export interface Config {
  */
 export function loadConfig(): Config {
   const port = Number(process.env.PORT ?? 4520);
-  const dataDir =
-    process.env.DIARY_DATA_DIR ??
-    path.join(os.homedir(), '.local', 'share', 'personal-diary');
+  const envDataDir = process.env.DIARY_DATA_DIR?.trim();
+  // 默认存在仓库 data/ 目录,与既有数据一致;空值视为未设置(可用 DIARY_DATA_DIR 覆盖)
+  const dataDir = envDataDir ? envDataDir : path.join(repoRoot, 'data');
 
   return {
     port,
