@@ -118,6 +118,49 @@ app.post('/api/auth/logout', { preHandler: requireAuth }, async (req) => {
   return { ok: true };
 });
 
+// ---------- 微信式扫码登录(电脑 QR → 手机确认 → 新设备拿 token) ----------
+interface PendingLogin {
+  confirmed: boolean;
+  token: string;
+  username: string;
+  createdAt: number;
+}
+const pendingLogins = new Map<string, PendingLogin>();
+
+// 1) 新设备(电脑)申请一个临时登录码(二维码内容 diary-login:<qrId>)
+app.post('/api/auth/login-qr', async (_req, reply) => {
+  const qrId = randomUUID();
+  pendingLogins.set(qrId, { confirmed: false, token: '', username: '', createdAt: Date.now() });
+  const dataUrl = await QRCode.toDataURL(`diary-login:${qrId}`, { margin: 1, width: 360 });
+  return reply.code(201).send({ qrId, dataUrl });
+});
+
+// 2) 新设备轮询:确认后拿 token
+app.get('/api/auth/login-qr/:qrId', async (req, reply) => {
+  const qrId = (req.params as { qrId: string }).qrId;
+  const p = pendingLogins.get(qrId);
+  if (!p) return reply.code(404).send({ error: '登录码不存在或已过期' });
+  if (!p.confirmed) return { status: 'pending' };
+  // 一次性:taken 后删除
+  pendingLogins.delete(qrId);
+  return { status: 'confirmed', token: p.token, username: p.username };
+});
+
+// 3) 手机(已登录)确认这台设备
+app.post('/api/auth/scan-confirm', { preHandler: requireAuth }, async (req, reply) => {
+  const qrId = (req.body as { qrId?: string } | null)?.qrId;
+  const user = (req as AuthedRequest).user!;
+  if (typeof qrId !== 'string') return reply.code(400).send({ error: '缺少登录码' });
+  const p = pendingLogins.get(qrId);
+  if (!p) return reply.code(404).send({ error: '登录码不存在或已过期' });
+  const token = createSession(user.id, 30 * 24 * 3600 * 1000);
+  p.confirmed = true;
+  p.token = token;
+  p.username = user.username;
+  return { ok: true };
+});
+
+
 // 会话保护:除 健康/鉴权/扫码 外,所有 /api 需 Bearer 登录
 const OPEN_PREFIXES = ['/api/health', '/api/auth', '/api/qr'];
 app.addHook('onRequest', async (req, reply) => {
