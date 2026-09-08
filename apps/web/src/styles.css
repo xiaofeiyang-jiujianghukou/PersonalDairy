@@ -765,6 +765,28 @@ a {
   border-color: var(--accent);
 }
 
+.settings-section {
+  font-size: 15px;
+  margin: 22px 0 10px;
+  color: var(--ink);
+  font-weight: 600;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.backup-msg {
+  margin-top: 12px;
+  font-size: 14px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+.backup-msg.ok {
+  color: #2e7d32;
+}
+.backup-msg:not(.ok) {
+  color: #c62828;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

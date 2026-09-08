@@ -442,6 +442,53 @@ app.get('/api/export', async (req, reply) => {
   return buildMarkdownExport(entries);
 });
 
+// ---------- 迁移包(与手机端同构:含全部日记+图片,便于手机↔电脑/备份) ----------
+app.get('/api/export/bundle', async (_req, reply) => {
+  const entries = getAllEntriesForSync(); // 含墓碑,便于 LWW 忠实合并
+  const images = listImageIds(config.imagesDir)
+    .map((id) => {
+      const bytes = readImage(config.imagesDir, id);
+      return bytes ? { id, dataUrl: `data:${detectImageMime(bytes)};base64,${bytes.toString('base64')}` } : null;
+    })
+    .filter((x): x is { id: string; dataUrl: string } => Boolean(x));
+  const bundle = {
+    app: 'diary',
+    version: 1,
+    createdAt: new Date().toISOString(),
+    deviceId: 'desktop',
+    entries,
+    images,
+  };
+  reply.header('Content-Type', 'application/json; charset=utf-8');
+  reply.header('Content-Disposition', `attachment; filename="diary-bundle-${new Date().toISOString().slice(0, 10)}.json"`);
+  return bundle;
+});
+
+app.post('/api/import/bundle', async (req, reply) => {
+  const b = (req.body as Record<string, unknown> | null) ?? {};
+  if ((b as { app?: unknown }).app !== 'diary') return reply.code(400).send({ error: '不是本应用的迁移包' });
+  if (b.version !== 1) return reply.code(400).send({ error: '不支持的迁移包版本' });
+  const entries = (b as { entries?: unknown }).entries;
+  if (!Array.isArray(entries)) return reply.code(400).send({ error: '迁移包缺少 entries' });
+  const validEntries = (entries as Entry[]).filter(
+    (e) => e && typeof e.id === 'string' && typeof e.date === 'string' && typeof e.content === 'string',
+  );
+  const entriesImported = applySyncedEntries(validEntries); // LWW
+
+  let imagesImported = 0;
+  for (const img of (b as { images?: Array<{ id?: string; dataUrl?: string }> }).images ?? []) {
+    if (!img || typeof img.dataUrl !== 'string') continue;
+    const decoded = decodeImageDataUrl(img.dataUrl);
+    if (!decoded) continue;
+    const id = img.id && /^[0-9a-f]{16,64}$/.test(img.id) ? img.id : imageIdFromDataUrl(img.dataUrl);
+    if (!readImage(config.imagesDir, id)) {
+      saveImage(config.imagesDir, id, decoded.bytes);
+      imagesImported++;
+    }
+  }
+  return { ok: true, entriesImported, imagesImported };
+});
+
 // ---------- 图片 ----------
 const IMAGE_DATA_RE = /^data:(image\/(?:png|jpe?g|gif|webp));base64,([A-Za-z0-9+/=]+)$/;
 

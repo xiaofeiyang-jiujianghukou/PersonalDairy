@@ -9,7 +9,8 @@
     ".": "./src/index.ts",
     "./sync": "./src/sync.ts",
     "./images": "./src/images.ts",
-    "./syncCrypto": "./src/syncCrypto.ts"
+    "./syncCrypto": "./src/syncCrypto.ts",
+    "./bundle": "./src/bundle.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

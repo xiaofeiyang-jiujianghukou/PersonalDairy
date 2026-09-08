@@ -63,3 +63,53 @@ export function generateSyncKey(): string {
   const b = crypto.getRandomValues(new Uint8Array(32));
   return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
+
+// ---------- 口令加密(迁移包/备份文件专用,与同步密钥无关) ----------
+// 用用户口令 + 随机盐走 PBKDF2 派生 AES-256 密钥,再 AES-GCM 加密负载。
+// 这样迁移包即使被他人拿到,没有口令也只是一串密文。
+const PBKDF2_ITERATIONS = 150_000;
+
+async function importKeyPbkdf2(passphrase: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey('raw', te.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+}
+
+async function deriveAesKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
+  const base = await importKeyPbkdf2(passphrase);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: salt as BufferSource, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    base,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+export interface PassEncPayload {
+  kdf: { salt: string; iterations: number };
+  iv: string;
+  data: string;
+}
+
+/** 用口令加密对象,返回 { kdf, iv, data }。 */
+export async function encryptObjectWithPassphrase(passphrase: string, obj: unknown): Promise<PassEncPayload> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveAesKey(passphrase, salt);
+  const data = te.encode(JSON.stringify(obj));
+  const ct = new Uint8Array(
+    await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv as BufferSource }, key, data as BufferSource),
+  );
+  return { kdf: { salt: b64(salt), iterations: PBKDF2_ITERATIONS }, iv: b64(iv), data: b64(ct) };
+}
+
+/** 用口令解密 { kdf, iv, data } 为对象(含认证,口令错误会抛错)。 */
+export async function decryptObjectWithPassphrase<T>(passphrase: string, enc: PassEncPayload): Promise<T> {
+  const salt = b64bytes(enc.kdf.salt);
+  const key = await deriveAesKey(passphrase, salt);
+  const pt = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: b64bytes(enc.iv) as BufferSource },
+    key,
+    b64bytes(enc.data) as BufferSource,
+  );
+  return JSON.parse(td.decode(pt)) as T;
+}
