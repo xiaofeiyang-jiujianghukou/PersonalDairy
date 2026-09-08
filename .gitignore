@@ -26,3 +26,7 @@ data/
 .jdk21/
 .gradle-home/
 .gradle-home-build*.log
+
+# 一键启停脚本的运行时产物
+.diary-server.log
+.diary.pid
