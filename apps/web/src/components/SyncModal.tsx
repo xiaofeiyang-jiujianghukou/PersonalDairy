@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import jsQR from 'jsqr';
-import { authApi, isPhoneMode, getSyncPartner, setSyncPartner, setSyncKey, syncNow } from '../api';
+import { authApi, isPhoneMode, getSyncPartner, setSyncPartner, setSyncKey, syncNow, relaySyncNow } from '../api';
 
 export default function SyncModal({ onClose }: { onClose: () => void }) {
   const phoneMode = isPhoneMode();
@@ -111,6 +111,20 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
     }
   }
 
+  async function doRelaySync() {
+    setErr(null);
+    setMsg(null);
+    setBusy(true);
+    try {
+      const r = await relaySyncNow();
+      setMsg(`经中继同步完成:拉取并合并 ${r.pulled} 条。`);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -144,6 +158,9 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
               </button>
               <button className="primary" onClick={doSync} disabled={busy || !partner}>
                 {busy ? '同步中…' : '立即同步'}
+              </button>
+              <button className="ghost" onClick={doRelaySync} disabled={busy}>
+                {busy ? '同步中…' : '经中继同步'}
               </button>
             </div>
           </>

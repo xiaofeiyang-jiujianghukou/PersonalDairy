@@ -319,5 +319,67 @@ export async function syncNow(): Promise<{ applied: number; pulled: number; part
   return { applied: res.applied ?? 0, pulled: toWrite.length, partner };
 }
 
+const DEVICE_ID_KEY = 'diary.deviceId';
+function getDeviceId(): string {
+  try {
+    let id = localStorage.getItem(DEVICE_ID_KEY) ?? '';
+    if (!id) {
+      id = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+      localStorage.setItem(DEVICE_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return 'anon';
+  }
+}
+
+/**
+ * 继电器同步(P2,跨网络):把加密增量推到中继,并取走对端推送的,解密后 LWW 合并。
+ * 不依赖 P2P 可达性;只要客户端能访问服务端(/api/relay)即可。
+ */
+export async function relaySyncNow(): Promise<{ pulled: number }> {
+  const syncKey = getSyncKey();
+  if (!syncKey) throw new Error('尚未配对(无同步密钥)');
+  const since = getLastSyncAt();
+  const ours = await getLocalBackend().getAll();
+  const delta = ours.filter((e) => !since || e.updatedAt > since);
+  const deltaImgIds = new Set<string>();
+  for (const e of delta) for (const id of extractDiaryImgRefs(e.content)) deltaImgIds.add(id);
+  const pushImages = await exportImagesFor([...deltaImgIds]);
+  const localImageIds = await listImageIds();
+  const deviceId = getDeviceId();
+  const payload = { since, entries: delta, images: pushImages, localImageIds };
+  const enc = await encryptObject(syncKey, payload);
+  await http<{ ok: boolean }>('/api/relay/push', {
+    method: 'POST',
+    body: JSON.stringify({ from: deviceId, payload: JSON.stringify(enc) }),
+  });
+
+  const pull = await http<{ messages: Array<{ from: string; payload: string }> }>(
+    `/api/relay/pull?from=${encodeURIComponent(deviceId)}`,
+  );
+  let pulled = 0;
+  for (const m of pull.messages) {
+    const peer = await decryptObject<{
+      entries: Entry[];
+      images?: Array<{ id: string; dataUrl: string }>;
+    }>(syncKey, JSON.parse(m.payload));
+    for (const img of peer.images ?? []) if (img?.dataUrl) await importImageDataUrl(img.dataUrl);
+    const reconciled = reconcileFull(ours, peer.entries ?? []);
+    const localMap = new Map(ours.map((e) => [e.id, e]));
+    const toWrite: Entry[] = [];
+    for (const e of reconciled) {
+      const cur = localMap.get(e.id);
+      if (!cur || e.updatedAt > cur.updatedAt) toWrite.push(e);
+    }
+    if (toWrite.length) {
+      await getLocalBackend().put(toWrite);
+      pulled += toWrite.length;
+    }
+  }
+  setLastSyncAt(new Date().toISOString());
+  return { pulled };
+}
+
 /** 测试辅助。 */
 export const _apiTest = { isPhoneLocal, getLocalBackend };
