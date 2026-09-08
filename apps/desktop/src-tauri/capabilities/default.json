@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "桌面登录壳默认能力:本地应用,无需网络/文件等额外权限",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -14,6 +14,9 @@
     "build": "pnpm --filter @diary/web build",
     "start": "pnpm --filter @diary/server start",
     "app": "pnpm build && pnpm start",
+    "desktop:dev": "pnpm --filter @diary/desktop dev",
+    "desktop:build": "pnpm --filter @diary/desktop build",
+    "icons": "pnpm --filter @diary/desktop icons",
     "typecheck": "pnpm -r typecheck"
   },
   "packageManager": "pnpm@11.25.0",

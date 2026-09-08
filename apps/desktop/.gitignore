@@ -1,0 +1,6 @@
+# Rust 构建产物(桌面应用壳)
+/target
+/gen
+
+# 打包产物
+src-tauri/target
