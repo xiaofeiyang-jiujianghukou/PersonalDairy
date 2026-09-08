@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, scryptSync, randomBytes, timingSafeEqual } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   Entry,
@@ -46,6 +46,23 @@ export function initDb(dbPath: string): DatabaseSync {
       entries_hash TEXT NOT NULL,
       created_at TEXT NOT NULL,
       PRIMARY KEY (year, month)
+    );
+
+    -- 账号鉴权(本期用户名+密码;手机号/微信登录预留)
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      phone TEXT,              -- 预留:手机号登录
+      oauth TEXT,              -- 预留:微信/OAuth 标识
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
     );
   `);
   migrateIfNeeded(db);
@@ -326,4 +343,79 @@ export function upsertSummary(
     )
     .run(year, month, content, hash, ts);
   return { year, month, content, entriesHash: hash, createdAt: ts };
+}
+
+// ================= 账号鉴权 =================
+
+export interface AuthUser {
+  id: number;
+  username: string;
+  phone: string | null;
+  oauth: string | null;
+}
+
+/** scrypt 密码哈希:盐:hash(64 字节)。 */
+export function hashPassword(pw: string): string {
+  const salt = randomBytes(16).toString('hex');
+  const hash = scryptSync(pw, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+export function verifyPassword(pw: string, stored: string): boolean {
+  const [salt, hash] = stored.split(':');
+  if (!salt || !hash) return false;
+  const computed = scryptSync(pw, salt, 64);
+  const expected = Buffer.from(hash, 'hex');
+  return computed.length === expected.length && timingSafeEqual(computed, expected);
+}
+
+export function createUser(username: string, password: string): AuthUser | null {
+  const ts = nowIso();
+  const hash = hashPassword(password);
+  try {
+    const res = getDb()
+      .prepare('INSERT INTO users (username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)')
+      .run(username, hash, ts, ts);
+    return { id: Number(res.lastInsertRowid), username, phone: null, oauth: null };
+  } catch {
+    return null; // 用户名冲突等
+  }
+}
+
+export function findUserByUsername(username: string): (AuthUser & { passwordHash: string }) | null {
+  const row = getDb().prepare('SELECT * FROM users WHERE username = ?').get(username) as
+    | Record<string, unknown>
+    | undefined;
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    username: String(row.username),
+    phone: row.phone ? String(row.phone) : null,
+    oauth: row.oauth ? String(row.oauth) : null,
+    passwordHash: String(row.password_hash),
+  };
+}
+
+export function createSession(userId: number, ttlMs = 30 * 24 * 3600 * 1000): string {
+  const token = randomBytes(32).toString('hex');
+  const ts = nowIso();
+  const exp = new Date(Date.now() + ttlMs).toISOString();
+  getDb()
+    .prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
+    .run(token, userId, ts, exp);
+  return token;
+}
+
+export function getUserByToken(token: string): AuthUser | null {
+  const row = getDb()
+    .prepare(
+      `SELECT u.id, u.username, u.phone, u.oauth FROM sessions s JOIN users u ON u.id = s.user_id
+       WHERE s.token = ? AND s.expires_at > ?`,
+    )
+    .get(token, nowIso()) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return { id: Number(row.id), username: String(row.username), phone: row.phone ? String(row.phone) : null, oauth: row.oauth ? String(row.oauth) : null };
+}
+
+export function deleteSession(token: string): void {
+  getDb().prepare('DELETE FROM sessions WHERE token = ?').run(token);
 }

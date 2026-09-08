@@ -805,3 +805,58 @@ a {
   font-size: 14px;
   margin: 12px 0 0;
 }
+
+/* ===== 登录页 ===== */
+.auth-gate {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.auth-card {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 8px 40px rgba(40, 30, 20, 0.12);
+  max-width: 380px;
+  width: 100%;
+  padding: 30px 26px;
+}
+
+.auth-title {
+  margin: 0 0 6px;
+  font-size: 22px;
+  text-align: center;
+}
+
+.auth-sub {
+  color: var(--ink-soft);
+  font-size: 14px;
+  margin: 0 0 18px;
+  text-align: center;
+}
+
+.auth-card .settings-input {
+  margin-bottom: 12px;
+}
+
+.auth-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.auth-actions .primary {
+  width: 100%;
+  min-height: 42px;
+}
+
+.auth-hint {
+  color: var(--ink-soft);
+  font-size: 12px;
+  text-align: center;
+  margin: 16px 0 0;
+}

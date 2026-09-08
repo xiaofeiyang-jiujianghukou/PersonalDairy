@@ -5,7 +5,8 @@ import DayView from './views/DayView';
 import SearchView from './views/SearchView';
 import SettingsModal from './components/SettingsModal';
 import SyncModal from './components/SyncModal';
-import { exportUrl } from './api';
+import AuthGate from './components/AuthGate';
+import { exportUrl, getToken } from './api';
 import { autoSync } from './lib/syncAuto';
 
 type View =
@@ -15,14 +16,17 @@ type View =
   | { kind: 'search' };
 
 export default function App() {
+  const [authed, setAuthed] = useState<boolean>(() => !!getToken());
   const [view, setView] = useState<View>({ kind: 'today' });
   const [showSettings, setShowSettings] = useState(false);
   const [showSync, setShowSync] = useState(false);
 
-  // 打开应用:手机本地优先且已配对 → 自动同步一次(双向增量)
+  // 打开应用:已登录后,手机本地优先且已配对 → 自动同步一次(双向增量)
   useEffect(() => {
-    void autoSync();
-  }, []);
+    if (authed) void autoSync();
+  }, [authed]);
+
+  if (!authed) return <AuthGate onAuthed={() => setAuthed(true)} />;
 
   return (
     <div className="app">

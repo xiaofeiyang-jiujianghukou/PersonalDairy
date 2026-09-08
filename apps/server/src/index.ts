@@ -31,6 +31,12 @@ import {
   upsertSummary,
   getAllEntriesForSync,
   applySyncedEntries,
+  createUser,
+  findUserByUsername,
+  verifyPassword,
+  createSession,
+  getUserByToken,
+  deleteSession,
 } from './db.js';
 import { getTextProvider, getVisionProvider } from './ai/index.js';
 import { summarizeMonth } from './ai/summary.js';
@@ -64,6 +70,65 @@ app.get('/api/health', async () => ({
   visionModel: config.ai.visionModel,
   dataDir: config.dataDir,
 }));
+
+// ---------- 账号鉴权 ----------
+// 本期:用户名 + 密码(手机号短信/微信 OAuth 预留字段与接口,暂不实现)
+interface AuthedRequest {
+  user?: { id: number; username: string };
+}
+const requireAuth = async (req: unknown, reply: { code: (n: number) => { send: (o: unknown) => unknown } }) => {
+  const r = req as AuthedRequest & { headers: Record<string, string | string[] | undefined> };
+  const auth = r.headers.authorization;
+  const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  const user = token ? getUserByToken(token) : null;
+  if (!user) {
+    return reply.code(401).send({ error: '未登录或会话已过期' });
+  }
+  r.user = { id: user.id, username: user.username };
+};
+
+app.post('/api/auth/register', async (req, reply) => {
+  const { username, password } = (req.body ?? {}) as { username?: string; password?: string };
+  if (typeof username !== 'string' || username.trim().length < 2) return reply.code(400).send({ error: '用户名至少 2 个字符' });
+  if (typeof password !== 'string' || password.length < 6) return reply.code(400).send({ error: '密码至少 6 位' });
+  const user = createUser(username.trim(), password);
+  if (!user) return reply.code(409).send({ error: '用户名已存在' });
+  const token = createSession(user.id);
+  return reply.code(201).send({ token, username: user.username });
+});
+
+app.post('/api/auth/login', async (req, reply) => {
+  const { username, password } = (req.body ?? {}) as { username?: string; password?: string };
+  if (typeof username !== 'string' || typeof password !== 'string') return reply.code(400).send({ error: '缺少用户名或密码' });
+  const user = findUserByUsername(username.trim());
+  if (!user || !verifyPassword(password, user.passwordHash)) return reply.code(401).send({ error: '用户名或密码错误' });
+  const token = createSession(user.id);
+  return { token, username: user.username };
+});
+
+app.get('/api/auth/me', { preHandler: requireAuth }, async (req) => {
+  const u = (req as AuthedRequest).user!;
+  return { username: u.username };
+});
+
+app.post('/api/auth/logout', { preHandler: requireAuth }, async (req) => {
+  const r = req as AuthedRequest & { headers: Record<string, string | string[] | undefined> };
+  const token = typeof r.headers.authorization === 'string' ? r.headers.authorization.slice(7).trim() : '';
+  if (token) deleteSession(token);
+  return { ok: true };
+});
+
+// 会话保护:除 健康/鉴权/扫码 外,所有 /api 需 Bearer 登录
+const OPEN_PREFIXES = ['/api/health', '/api/auth', '/api/qr'];
+app.addHook('onRequest', async (req, reply) => {
+  const url = (req.url ?? '').split('?')[0] ?? '';
+  if (OPEN_PREFIXES.some((p) => url === p || url.startsWith(`${p}/`))) return;
+  const auth = req.headers.authorization;
+  const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  const user = token ? getUserByToken(token) : null;
+  if (!user) return reply.code(401).send({ error: '未登录或会话已过期' });
+  (req as AuthedRequest).user = { id: user.id, username: user.username };
+});
 
 // ---------- 日记 ----------
 app.get('/api/entries', async (req, reply) => {

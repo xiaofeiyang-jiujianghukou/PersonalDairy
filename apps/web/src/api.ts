@@ -12,11 +12,16 @@ import { decryptObject, encryptObject } from '@diary/shared/syncCrypto';
 import { IdbBackend, createLocalApi, listImageIds, type LocalBackend } from './lib/localStore';
 import { exportImagesFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
 
+// 端点烘焙原则:生产构建用 VITE_API_BASE(固定云服务域,非用户配置);
+// 测试阶段可用 localStorage 覆盖(即"服务端地址"设置)。
+const bakedApiBase = (import.meta as unknown as { env?: { VITE_API_BASE?: string } }).env?.VITE_API_BASE ?? '';
 const API_BASE_KEY = 'diary.apiBase';
 const SYNC_PARTNER_KEY = 'diary.syncPartner';
 
-/** 读取用户配置的日记服务器地址(留空 = 同源,即当前页面自带的日记服务)。 */
+/** 读取 API 基点:优先烘焙端点(生产固定),测试阶段可被 localStorage 覆盖;留空 = 同源。 */
 export function getApiBase(): string {
+  const baked = bakedApiBase.replace(/\/+$/, '');
+  if (baked) return baked;
   try {
     return (localStorage.getItem(API_BASE_KEY) ?? '').trim().replace(/\/+$/, '');
   } catch {
@@ -99,8 +104,40 @@ function resolve(url: string): string {
   return base ? `${base}${url}` : url;
 }
 
+const TOKEN_KEY = 'diary.token';
+/** 会话 token(登录后由鉴权接口返回)。 */
+export function getToken(): string {
+  try {
+    return (localStorage.getItem(TOKEN_KEY) ?? '').trim();
+  } catch {
+    return '';
+  }
+}
+export function setToken(t: string): void {
+  try {
+    localStorage.setItem(TOKEN_KEY, t.trim());
+  } catch {
+    /* ignore */
+  }
+}
+export function clearToken(): void {
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  const t = getToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
 async function http<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(resolve(url), { headers: { 'Content-Type': 'application/json' }, ...init });
+  const res = await fetch(resolve(url), {
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    ...init,
+  });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `请求失败 (${res.status})`);
@@ -109,7 +146,7 @@ async function http<T>(url: string, init?: RequestInit): Promise<T> {
 }
 async function httpFrom<T>(base: string, url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${base || ''}${url}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     ...init,
   });
   if (!res.ok) {
@@ -179,6 +216,22 @@ function entriesHashSimple(entries: Entry[]): string {
 
 /** 供 UI 使用的统一 API(桌面=远端,手机 App=本地)。 */
 export const api = isPhoneLocal() ? (localApi as unknown as typeof remoteApi) : remoteApi;
+
+/** 账号鉴权(始终走服务端,与本地优先无关)。 */
+export const authApi = {
+  register: (username: string, password: string) =>
+    http<{ token: string; username: string }>('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+  login: (username: string, password: string) =>
+    http<{ token: string; username: string }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+  me: () => http<{ username: string }>('/api/auth/me'),
+  logout: () => http<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+};
 
 /** 导出下载地址(远端模式带基址;本地模式返回 '' 表示不支持)。 */
 export function exportUrl(): string {
