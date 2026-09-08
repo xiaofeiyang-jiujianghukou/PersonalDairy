@@ -1,94 +1,98 @@
 # 我的日记 (Personal Diary)
 
-一本**只属于你**的、本地优先、越记越懂你的私人日记。
+一本**只属于你**的、**本地优先 + 多端对等同步**的私人日记。数据永远存你自己的设备,同步是设备↔设备的**点对点 + 增量 + 端到端加密**,没有中心内容服务器。
 
 > 不为建立文件夹目录,不为打分分类。打开就写,写完按「时间」自然回看:
 > 今天记了什么、上个月发生了什么、这个月过得怎么样。
 
-## 设计原则
+## 核心原则
 
-- **零负担记录**:不建目录、不打分、不分类,只有自由文字(Markdown)。
-- **按时间生长**:日记天然按天、按月组织,时间轴 + 日历回看。
-- **被动情绪小结**:AI 在你写完文字后自动归纳月度情绪小结,你不需要额外做任何动作。
-- **隐私是底线**:数据只存在你自己的设备上,只有你能看,无账号、无分享。
+- **数据私有存本地**:每台设备各自存完整一份(电脑 = 本机 SQLite / 文件,手机 = IndexedDB),日记内容只在你自己的设备上。
+- **多端对等同步**:电脑、手机是**对等终端**;设备之间**点对点**互相同步,按时间取新合并,**无内容服务器**。
+- **增量 + 加密 + 自动**:只传"自上次同步以来的改动",用量小;同步负载 **AES-256-GCM 端到端加密**;打开/保存后**自动同步**。
+- **被动情绪小结**:AI 在你写完文字后归纳月度情绪小结,你无需额外操作。
+- 零负担记录:不建目录、不打分、不分类,只有自由 Markdown。
 
-## 功能(v1)
+## 当前功能
 
-- 写日记(默认今天,支持 Markdown,一天可记多条)
-- 插入图片(粘贴或选择文件),回看时直接显示
-- 「今天 / 日历 / 搜索」三种回看方式
-- AI 月度情绪小结(可插拔供应商,被动生成,自动缓存)
-- 全文搜索(LIKE 子串,对你这个量级永远够用)
-- 一键导出全部日记为 Markdown / JSON
-- 数据本地存储(SQLite,Node 内置引擎,零原生依赖)
+- 写日记(默认今天,Markdown,**块式编辑器**保留换行与缩进,一天可记多条)
+- 插入图片(粘贴 / 选文件;**内容寻址 `diary-img:<hash>`** 存储,两端一致、离线可显示)
+- 「今天 / 日历 / 搜索」三种回看方式;按月小结
+- **AI 月度情绪小结** —— 已做成**独立服务端接口 `/api/summarize`**(自包含、可部署/上云;纯文字用 deepseek-v4-pro、含图自动切视觉模型)
+- **多端同步** —— 扫码配对 → **双向、增量、端到端加密、自动**同步
+- 全文搜索(LIKE 子串,个人量级永远够用)、一键导出 Markdown / JSON
+- **手机端可安装 APK**(Capacitor 打包;本地优先,离线可写)
 
-## 快速开始
-
-要求:**Node.js ≥ 22.5**(本项目使用 Node 内置的 `node:sqlite`)。
+## 一键启动
 
 ```bash
-# 1. 安装依赖
-pnpm install
-
-# 2. 开发模式(前端热更新 + 后端热重载)
-pnpm dev
-# 前端: http://localhost:5173  (自动代理 /api 到后端)
-
-# 3. 生产模式(单进程,前后端一起伺服)
-pnpm build
-pnpm start
-# 打开: http://localhost:4520
+# Windows:双击 start.bat      Linux/macOS:./start.sh     或命令行: pnpm app
+./start.sh            # 启动 + 自动打开浏览器 http://localhost:4520
+./start.sh stop       # 停止
+./start.sh restart    # 重启(先停再启,重新构建)
+./start.sh status     # 查看是否运行
 ```
+要求 **Node.js ≥ 22.5**。首次会自动 `pnpm install`;之后秒开,数据在仓库 `data/` 目录(可用 `DIARY_DATA_DIR` 改)。
 
-### 配置 AI(可选)
+> 开发模式:`pnpm dev`(前端 5173 + 后端 4520,热更新)。
 
-复制 `.env.example` 为 `.env`,填写你的模型密钥。**不填也能用**,只是情绪小结会显示占位提示。
+## 配置 AI(可选)
+
+复制 `.env.example` 为 `.env`,填模型密钥。**不填也能用**,小结降级为占位提示。
 
 ```env
-# 任选其一(都是 OpenAI 兼容接口):
-#   豆包 Doubao:  AI_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
-#   DeepSeek:     AI_BASE_URL=https://api.deepseek.com
-#   通义 Qwen:    AI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-AI_PROVIDER=openai-compatible
+AI_PROVIDER=openai-compatible       # 豆包/DeepSeek/Qwen 通用(OpenAI 兼容)
 AI_BASE_URL=https://api.deepseek.com
 AI_API_KEY=你的密钥
-# 纯文字模型(无图时使用) / 视觉模型(含图时自动切换)
-AI_TEXT_MODEL=deepseek-v4-pro
-AI_VISION_MODEL=deepseek-v4-flash-vision-exp
+AI_TEXT_MODEL=deepseek-v4-pro        # 纯文字(无图)
+AI_VISION_MODEL=deepseek-v4-flash-vision-exp  # 含图自动切视觉模型
 AI_THINKING=disabled
 ```
+AI 供应商可插拔(见 `apps/server/src/ai/provider.ts`)。
 
-AI 供应商是**可插拔**的:实现 `AiProvider` 接口即可换模型,业务代码零改动
-(见 `apps/server/src/ai/provider.ts`)。
+## 多端同步怎么用
 
-### 数据存在哪
+1. **电脑端**:`./start.sh` 启动;浏览器打开,点顶栏「配对」→ 显示二维码。
+2. **手机端**:重装 APK(本地优先)→「配对」→「扫描电脑二维码」→ 完成配对(二维码含同步密钥)。
+3. 之后**自动**双向增量加密同步;电脑、手机各自留存一份,谁写都能同步到另一台。
 
-默认 `~/.local/share/personal-diary/diary.db`,与代码仓库分离,升级不丢数据。
-可用 `DIARY_DATA_DIR` 环境变量改到任意位置。
+> 跨网络(手机流量)需一个**加密连接器**(Tailscale / 你自建中继),属可选附件,只转发密文、不存储你的数据。
+
+## 数据 & 密钥
+
+- 数据默认在仓库 `data/`(`diary.db` + `images/` + `uploads/`),已 gitignore,升级不丢;可用 `DIARY_DATA_DIR` 改位置。
+- 同步密钥存电脑 `data/synckey` + 手机 localStorage,扫码配对时建立;同步负载 AES-256-GCM 加密,仅两端能解。
+- AI 密钥在 `.env`,不入库、不进 Git。
 
 ## 项目结构
 
 ```
 apps/
-  server/          # Node + Fastify 后端(内置 node:sqlite,零原生依赖)
-    src/ai/        # 可插拔 AI 供应商 + 月度情绪小结
-  web/             # React + Vite 前端
+  server/          # Node + Fastify(本机即一个终端,暴露自己那份数据 /api/sync + 公共能力 /api/summarize)
+    src/ai/        # 可插拔 AI 供应商 + 月度小结
+    src/images.ts  # 内容寻址图片(哈希存/读/归一化)
+  web/             # React + Vite 前端(桌面浏览器 / 手机 APK 共用;本地优先用 IndexedDB)
+  web/android/     # Capacitor 安卓工程(可打 APK)
 packages/
-  shared/          # 前后端共享的类型与 API 契约(唯一事实源)
+  shared/          # 类型契约 + 同步引擎(sync) + 图片协议(images) + 加密(syncCrypto)
+start.sh / start.bat  # 一键启停
 ```
 
 ## 技术选型(面向 10 年)
 
 | 层 | 选择 | 理由 |
 |---|---|---|
-| 语言 | TypeScript 全栈 | 一套语言贯穿网页 → 手机(PWA/RN) → 桌面(Tauri) |
-| 存储 | SQLite(内置) | 每用户一份独立库,隐私隔离;零原生依赖、易迁移 |
-| 搜索 | LIKE 子串 | 个人日记体量(十年≈几千条)永远够用,行为直观 |
-| AI | 可插拔适配器 | 换模型不重写业务;将来可换本地模型 |
+| 语言 | TypeScript 全栈 | 一套语言贯穿网页 → 手机(PWA/RN)→ 桌面 |
+| 存储 | SQLite(内置)/ IndexedDB | 每终端一份独立本地库,隐私隔离、零原生依赖 |
+| 同步 | P2P 增量 + LWW + 墓碑 + 端到端加密 | 无中心服务器、数据只在设备间 |
+| 图片 | 内容寻址(SHA-256) | 两端一致、离线可显示、去重 |
+| AI | 可插拔适配器 + 独立服务端接口 | 换模型不重写;可单独部署/上云 |
 
 ## 路线图
 
-- [ ] **v1(当前)**:单机本地日记 + 月度情绪小结
-- [ ] AI 陪伴对话:基于你自己的全部记录,能安慰、开导你
-- [ ] 移动端:PWA → 原生 App,随时随地记
-- [ ] 多端端到端加密同步:授权后才开,同步后数据仍以加密态落在本地
+- [x] v1:单机日记 + AI 月小结 + 内容寻址图片 + 一键启停
+- [x] v2:多端**本地私有 + 点对点**同步(增量、加密、自动、扫码配对)+ 手机端 APK
+- [ ] **三端协作(电脑端 / 服务端 / 手机端)**:微信式"手机扫码登录电脑端",服务端负责**加密传输 & AI 通信**,同网络点对点互传 —— 见 `docs/THREE_TIER.md`
+- [ ] AI 陪伴对话(基于全部记录,公共能力、服务端可部署)
+- [ ] 手机↔手机同步(导出/导入或设备对传)
+- [ ] 跨网络"加密连接器"(Tailscale / 自建中继,可选)
