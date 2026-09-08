@@ -1,24 +1,35 @@
-import { getSyncPartner, isPhoneMode, syncNow } from '../api';
+import { getSyncKey, getSyncPartner, isPhoneMode, relaySyncNow, syncNow } from '../api';
 
 let syncing = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
 
-/** 单向自动同步:手机本地优先、已配对、且当前未在同步时,执行一次增量同步(双向)。 */
+/**
+ * 自动同步:手机本地优先、已有同步密钥、且未在同步时。
+ * 优先「点对点直连」(已配对且可达);不可达则自动降级为「经中继」同步(P2)。
+ */
 export async function autoSync(): Promise<void> {
-  if (!isPhoneMode() || !getSyncPartner() || syncing) return;
+  if (!isPhoneMode() || !getSyncKey() || syncing) return;
   syncing = true;
   try {
-    await syncNow();
+    if (getSyncPartner()) {
+      try {
+        await syncNow(); // 直接与配对设备同步
+        return;
+      } catch {
+        /* 点对点不可达 → 走中继 */
+      }
+    }
+    await relaySyncNow(); // 经服务端密文中继(跨网络)
   } catch {
-    /* 离线/不可达/未配对手动安装时静默;不打扰用户 */
+    /* 都不可达/离线:静默,不打扰用户 */
   } finally {
     syncing = false;
   }
 }
 
-/** 内容有变化后,延迟触发一次自动同步(去抖,避免连续保存狂发请求)。 */
+/** 内容有变化后,延迟触发一次自动同步(去抖)。 */
 export function scheduleSync(delay = 1200): void {
-  if (!isPhoneMode() || !getSyncPartner()) return;
+  if (!isPhoneMode() || !getSyncKey()) return;
   if (timer) clearTimeout(timer);
   timer = setTimeout(() => {
     timer = null;
