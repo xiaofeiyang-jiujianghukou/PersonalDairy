@@ -254,6 +254,33 @@ app.post('/api/summary', async (req, reply) => {
   return { summary, model: hasImages ? config.ai.visionModel : config.ai.textModel };
 });
 
+// ---------- 公共能力:AI 小结(自包含、可独立部署/上云) ----------
+// 客户端把"当月日记"发来,服务端用自身 AI 密钥生成小结并返回。不依赖本库,可部署到任意服务器。
+app.post('/api/summarize', async (req, reply) => {
+  const raw = req.body as { enc?: { iv: string; data: string } } | { entries?: Entry[] } | null;
+  const key = getSyncKey();
+  const encrypted = Boolean(raw && (raw as { enc?: unknown }).enc);
+  let body: { entries?: Entry[] };
+  if (encrypted) {
+    try {
+      body = await decryptObject<{ entries?: Entry[] }>(key, (raw as { enc: { iv: string; data: string } }).enc);
+    } catch {
+      return reply.code(401).send({ error: '同步密钥不匹配' });
+    }
+  } else {
+    body = raw as { entries?: Entry[] };
+  }
+  const entries = body?.entries;
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return reply.code(400).send({ error: '没有可小结的日记' });
+  }
+  const hasImages = entriesContainImages(entries);
+  const provider = hasImages ? getVisionProvider() : getTextProvider();
+  const content = await summarizeMonth(entries, provider, config.imagesDir, config.uploadsDir);
+  const result = { content, model: hasImages ? config.ai.visionModel : config.ai.textModel };
+  return encrypted ? { enc: await encryptObject(key, result) } : result;
+});
+
 // ---------- 导出 ----------
 function buildMarkdownExport(entries: Awaited<ReturnType<typeof listAllEntries>>): string {
   const byDate = new Map<string, typeof entries>();

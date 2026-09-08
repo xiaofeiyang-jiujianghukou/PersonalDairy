@@ -141,6 +141,42 @@ function getLocalBackend(): LocalBackend {
 }
 const localApi = createLocalApi(getLocalBackend());
 
+// 手机本地优先:AI 月度小结委托给配对的电脑(/api/summarize,端到端加密)——公共能力在服务端,可上云
+function entriesHashSimple(entries: Entry[]): string {
+  const s = entries.map((e) => `${e.id}|${e.updatedAt}|${e.content}`).join('\n');
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(16);
+}
+(localApi as unknown as { summaryGenerate: unknown }).summaryGenerate = async (month: string) => {
+  const partner = getSyncPartner();
+  if (!partner) throw new Error('尚未配对电脑,无法生成小结');
+  const syncKey = getSyncKey();
+  const all = await getLocalBackend().getAll();
+  const entries = all.filter((e) => e.date.startsWith(month) && !e.deletedAt);
+  if (entries.length === 0) throw new Error('这个月还没有日记');
+  const payload = { month, entries };
+  const raw = await httpFrom<
+    { enc: { iv: string; data: string } } | { content: string; model: string }
+  >(partner, '/api/summarize', {
+    method: 'POST',
+    body: JSON.stringify(syncKey ? { enc: await encryptObject(syncKey, payload) } : payload),
+  });
+  const res = syncKey
+    ? await decryptObject<{ content: string; model: string }>(syncKey, (raw as { enc: { iv: string; data: string } }).enc)
+    : (raw as { content: string; model: string });
+  return {
+    summary: {
+      year: Number(month.slice(0, 4)),
+      month: Number(month.slice(5, 7)),
+      content: res.content,
+      entriesHash: entriesHashSimple(entries),
+      createdAt: new Date().toISOString(),
+    },
+    model: res.model,
+  };
+};
+
 /** 供 UI 使用的统一 API(桌面=远端,手机 App=本地)。 */
 export const api = isPhoneLocal() ? (localApi as unknown as typeof remoteApi) : remoteApi;
 
