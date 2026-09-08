@@ -64,6 +64,17 @@ export function initDb(dbPath: string): DatabaseSync {
       created_at TEXT NOT NULL,
       expires_at TEXT NOT NULL
     );
+
+    -- P2:跨网络密文中继(先落桶、再取走;只存加密载荷,不通读)
+    CREATE TABLE IF NOT EXISTS relay (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      from_device TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      consumed INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_relay_user ON relay(user_id, consumed);
   `);
   migrateIfNeeded(db);
   getDeviceId(db); // 确保本设备标识存在
@@ -418,4 +429,39 @@ export function getUserByToken(token: string): AuthUser | null {
 
 export function deleteSession(token: string): void {
   getDb().prepare('DELETE FROM sessions WHERE token = ?').run(token);
+}
+
+// ================= 跨网络中继(P2:先落桶、再取走,只存加密载荷) =================
+
+export function putRelay(userId: number, fromDevice: string, payload: string): void {
+  getDb()
+    .prepare('INSERT INTO relay (user_id, from_device, payload, created_at) VALUES (?, ?, ?, ?)')
+    .run(userId, fromDevice, payload, nowIso());
+}
+
+/** 取走"非本设备"发出的未消费载荷,并标记已消费(由对端处理)。 */
+export function pullRelay(
+  userId: number,
+  exclDevice: string,
+  limit = 50,
+): Array<{ id: number; from: string; payload: string }> {
+  const d = getDb();
+  d.exec('BEGIN');
+  try {
+    const rows = d
+      .prepare(
+        'SELECT id, from_device, payload FROM relay WHERE user_id=? AND consumed=0 AND from_device<>? ORDER BY id ASC LIMIT ?',
+      )
+      .all(userId, exclDevice, limit) as Array<Record<string, unknown>>;
+    if (rows.length) {
+      const ids = rows.map((r) => Number(r.id));
+      const placeholders = ids.map(() => '?').join(',');
+      d.prepare(`UPDATE relay SET consumed=1 WHERE id IN (${placeholders})`).run(...ids);
+    }
+    d.exec('COMMIT');
+    return rows.map((r) => ({ id: Number(r.id), from: String(r.from_device), payload: String(r.payload) }));
+  } catch (e) {
+    d.exec('ROLLBACK');
+    throw e;
+  }
 }

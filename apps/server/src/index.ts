@@ -37,6 +37,8 @@ import {
   createSession,
   getUserByToken,
   deleteSession,
+  putRelay,
+  pullRelay,
 } from './db.js';
 import { getTextProvider, getVisionProvider } from './ai/index.js';
 import { summarizeMonth } from './ai/summary.js';
@@ -158,6 +160,24 @@ app.post('/api/auth/scan-confirm', { preHandler: requireAuth }, async (req, repl
   p.token = token;
   p.username = user.username;
   return { ok: true };
+});
+
+// ---------- P2:跨网络密文中继(先落桶、再取走;只存加密载荷,不通读) ----------
+app.post('/api/relay/push', async (req, reply) => {
+  const user = (req as AuthedRequest).user!;
+  const { from, payload } = (req.body ?? {}) as { from?: string; payload?: string };
+  if (typeof from !== 'string' || typeof payload !== 'string' || payload.length > 64 * 1024 * 1024) {
+    return reply.code(400).send({ error: '无效的载荷' });
+  }
+  putRelay(user.id, from, payload);
+  return { ok: true };
+});
+
+app.get('/api/relay/pull', async (req) => {
+  const user = (req as AuthedRequest).user!;
+  const from = String((req.query as { from?: string }).from ?? '');
+  const msgs = pullRelay(user.id, from);
+  return { messages: msgs.map((m) => ({ from: m.from, payload: m.payload })) };
 });
 
 
