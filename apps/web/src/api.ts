@@ -444,12 +444,43 @@ export async function relaySyncNow(): Promise<{ pulled: number }> {
   const pushImages = await exportMediaFor([...deltaImgIds]);
   const localImageIds = await listImageIds();
   const deviceId = getDeviceId();
-  const payload = { since, entries: delta, images: pushImages, localImageIds };
-  const enc = await encryptObject(syncKey, payload);
-  await http<{ ok: boolean }>('/api/relay/push', {
-    method: 'POST',
-    body: JSON.stringify({ from: deviceId, payload: JSON.stringify(enc) }),
-  });
+
+  // 分批推送:避免单条 POST 太大(或 nginx/client 限制)被中断。每批估算 < 192KB。
+  const MAX = 192 * 1024;
+  const imgMap = new Map(pushImages.map((i) => [i.id, i]));
+  const chunks: Array<{ entries: Entry[]; images: Array<{ id: string; dataUrl: string }> }> = [];
+  let curEntries: Entry[] = [];
+  let curImages = new Map<string, { id: string; dataUrl: string }>();
+  let curSize = 0;
+  for (const e of delta) {
+    const ids = extractMediaIds(e.content);
+    const imgs = ids.map((id) => imgMap.get(id)).filter((x): x is { id: string; dataUrl: string } => Boolean(x));
+    const eSize = JSON.stringify(e).length + imgs.reduce((s, x) => s + x.dataUrl.length, 0);
+    if (curEntries.length && curSize + eSize > MAX) {
+      chunks.push({ entries: curEntries, images: [...curImages.values()] });
+      curEntries = [];
+      curImages = new Map();
+      curSize = 0;
+    }
+    curEntries.push(e);
+    curSize += JSON.stringify(e).length;
+    for (const x of imgs) {
+      if (!curImages.has(x.id)) {
+        curImages.set(x.id, x);
+        curSize += x.dataUrl.length;
+      }
+    }
+  }
+  if (curEntries.length) chunks.push({ entries: curEntries, images: [...curImages.values()] });
+
+  for (const chunk of chunks) {
+    const payload = { since, entries: chunk.entries, images: chunk.images, localImageIds };
+    const enc = await encryptObject(syncKey, payload);
+    await http<{ ok: boolean }>('/api/relay/push', {
+      method: 'POST',
+      body: JSON.stringify({ from: deviceId, payload: JSON.stringify(enc) }),
+    });
+  }
 
   const pull = await http<{ messages: Array<{ from: string; payload: string }> }>(
     `/api/relay/pull?from=${encodeURIComponent(deviceId)}`,
