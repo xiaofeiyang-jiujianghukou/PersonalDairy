@@ -11,6 +11,7 @@ import { extractMediaIds } from '@diary/shared/images';
 import { decryptObject, encryptObject } from '@diary/shared/syncCrypto';
 import { IdbBackend, createLocalApi, listImageIds, type LocalBackend } from './lib/localStore';
 import { exportMediaFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
+import { getFetch } from './lib/net';
 
 // 端点烘焙原则:生产构建用 VITE_API_BASE(固定云服务域,非用户配置);
 // 测试阶段可用 localStorage 覆盖(即"服务端地址"设置)。
@@ -146,7 +147,7 @@ function authHeaders(): Record<string, string> {
 }
 
 async function http<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(resolve(url), {
+  const res = await (await getFetch())(resolve(url), {
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     ...init,
   });
@@ -157,7 +158,7 @@ async function http<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 async function httpFrom<T>(base: string, url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${base || ''}${url}`, {
+  const res = await (await getFetch())(`${base || ''}${url}`, {
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     ...init,
   });

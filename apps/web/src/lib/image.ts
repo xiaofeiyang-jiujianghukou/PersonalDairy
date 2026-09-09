@@ -1,4 +1,5 @@
 import { isPhoneMode } from '../api';
+import { getFetch } from './net';
 import { getImage, listImageIds, putImage } from './localStore';
 import { detectImageMime, makeDiaryImgRef, makeDiaryVideoRef } from '@diary/shared/images';
 
@@ -30,7 +31,7 @@ export async function uploadImage(file: File): Promise<string> {
     return makeDiaryImgRef(id);
   }
   const dataUrl = await fileToDataUrl(file);
-  const res = await fetch('/api/images', {
+  const res = await (await getFetch())('/api/images', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ dataUrl }),
@@ -61,7 +62,7 @@ export async function uploadVideo(file: File): Promise<string> {
     return makeDiaryVideoRef(id);
   }
   const dataUrl = await fileToDataUrl(file);
-  const res = await fetch('/api/media', {
+  const res = await (await getFetch())('/api/media', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ dataUrl }),
@@ -90,7 +91,7 @@ export async function resolveVideoRef(ref: string): Promise<string> {
       const blob = await getImage(id);
       return blob ? URL.createObjectURL(blob) : '';
     }
-    const res = await fetch(`/api/media/${id}`);
+    const res = await (await getFetch())(`/api/media/${id}`);
     if (!res.ok) return '';
     const blob = await res.blob();
     return URL.createObjectURL(blob);
@@ -114,7 +115,7 @@ export async function resolveImageRef(ref: string): Promise<string> {
       const blob = await getImage(id);
       return blob ? URL.createObjectURL(blob) : '';
     }
-    const res = await fetch(`/api/images/${id}`);
+    const res = await (await getFetch())(`/api/images/${id}`);
     if (!res.ok) return '';
     const blob = await res.blob();
     return URL.createObjectURL(blob);
@@ -173,7 +174,7 @@ function blobToDataUrl(blob: Blob): Promise<string> {
 
 /** 把 dataURL 写入本机图片库(供同步拉取存回)。 */
 export async function importImageDataUrl(dataUrl: string): Promise<string> {
-  const res = await fetch(dataUrl);
+  const res = await fetch(dataUrl); // data: URL,浏览器 fetch 即可(无 CORS)
   const blob = await res.blob();
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const id = await sha256Hex(bytes);
@@ -197,7 +198,7 @@ export async function normalizeUploadRefs(content: string, baseUrl: string): Pro
     const ref = m[1]!;
     let replaced = false;
     try {
-      const res = await fetch(`${baseUrl}${ref}`);
+      const res = await (await getFetch())(`${baseUrl}${ref}`);
       if (res.ok) {
         const blob = await res.blob();
         const bytes = new Uint8Array(await blob.arrayBuffer());
