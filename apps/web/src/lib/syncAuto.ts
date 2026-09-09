@@ -6,6 +6,7 @@ import {
   relayPullOnly,
   relaySyncNow,
   relayWaitOnce,
+  setRelayCursor,
   syncNow,
   setLastSyncAt,
 } from '../api';
@@ -21,11 +22,18 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * 先清空本机同步水位 → 把本地全部日记推给中继、并拉取对端全部(增量+消费导致的"数据丢失/换机"因此能自动找回)。
  * 无需手动点"同步":打开即同步。优先点对点直连,不可达自动降级为经中继(P2)。
  */
+/**
+ * 自动同步(登录/打开 App 时):**全量对账**。
+ * 把本机同步游标归零 → 从中继**全量拉取**(分页,能补回之前错过的消息,如换密钥/换机后漏掉的对端更新),
+ * 并**只推本机新增增量**(不再清空水位,避免每次登录全量重推导致中继膨胀)。
+ * 无需手动点"同步":打开即同步。优先点对点直连,不可达自动降级为经中继。
+ */
 export async function autoSync(): Promise<{ ok: boolean; pulled?: number }> {
   if (!isPhoneMode() || !getSyncKey() || syncing) return { ok: false };
   syncing = true;
   try {
-    setLastSyncAt(''); // 登录/打开=全量:清水位→推全部/拉全部
+    setLastSyncAt(''); // 登录/打开=全量:清水位→推全部
+    setRelayCursor(0); // 归零游标 → 全量拉取(分页),补回之前错过的对端更新(换密钥/换机漏掉的)
     const r = await doSync();
     return { ok: true, pulled: r };
   } catch {

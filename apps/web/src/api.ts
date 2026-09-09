@@ -530,36 +530,43 @@ export async function relayPullOnly(): Promise<{ pulled: number }> {
   const syncKey = getSyncKey();
   if (!syncKey) throw new Error('尚未配对(无同步密钥)');
   const deviceId = getDeviceId();
-  const cursor = getRelayCursor();
-  const pull = await http<{ messages: Array<{ id: number; from: string; payload: string }>; lastId: number }>(
-    `/api/relay/pull?from=${encodeURIComponent(deviceId)}&after=${cursor}`,
-  );
-  const msgs = pull.messages ?? [];
+  const pageSize = 15;
+  let cursor = getRelayCursor();
   let pulled = 0;
-  let maxId = cursor;
-  // 拉取后刷新一下本地(便于合并最新)
-  const freshOurs = await getLocalBackend().getAll();
-  for (const m of msgs) {
-    if (m.id > maxId) maxId = m.id;
-    const peer = await decryptObject<{
-      entries: Entry[];
-      images?: Array<{ id: string; dataUrl: string }>;
-    }>(syncKey, JSON.parse(m.payload));
-    for (const img of peer.images ?? []) if (img?.dataUrl) await importImageDataUrl(img.dataUrl);
-    const reconciled = reconcileFull(freshOurs, peer.entries ?? []);
-    const localMap = new Map(freshOurs.map((e) => [e.id, e]));
-    const toWrite: Entry[] = [];
-    for (const e of reconciled) {
-      const cur = localMap.get(e.id);
-      if (!cur || e.updatedAt > cur.updatedAt) toWrite.push(e);
+  // 分批拉取:一次只取一页(限制条数),避免一次拉全量(中继可能积大量含图消息)导致响应过大/超时。
+  // 每页合并后推进游标,直到取完。这样即使之前错过的消息也能随后补上。
+  for (let guard = 0; guard < 300; guard++) {
+    const pull = await http<{ messages: Array<{ id: number; from: string; payload: string }>; lastId: number }>(
+      `/api/relay/pull?from=${encodeURIComponent(deviceId)}&after=${cursor}&limit=${pageSize}`,
+    );
+    const msgs = pull.messages ?? [];
+    if (!msgs.length) break;
+    // 拉取后刷新一下本地(便于合并最新)
+    const freshOurs = await getLocalBackend().getAll();
+    let pageMax = cursor;
+    for (const m of msgs) {
+      if (m.id > pageMax) pageMax = m.id;
+      const peer = await decryptObject<{
+        entries: Entry[];
+        images?: Array<{ id: string; dataUrl: string }>;
+      }>(syncKey, JSON.parse(m.payload));
+      for (const img of peer.images ?? []) if (img?.dataUrl) await importImageDataUrl(img.dataUrl);
+      const reconciled = reconcileFull(freshOurs, peer.entries ?? []);
+      const localMap = new Map(freshOurs.map((e) => [e.id, e]));
+      const toWrite: Entry[] = [];
+      for (const e of reconciled) {
+        const cur = localMap.get(e.id);
+        if (!cur || e.updatedAt > cur.updatedAt) toWrite.push(e);
+      }
+      if (toWrite.length) {
+        await getLocalBackend().put(toWrite);
+        pulled += toWrite.length;
+      }
     }
-    if (toWrite.length) {
-      await getLocalBackend().put(toWrite);
-      pulled += toWrite.length;
-    }
+    cursor = Math.max(pageMax, pull.lastId);
+    setRelayCursor(cursor);
+    if (msgs.length < pageSize) break; // 不足一页 = 已拉完
   }
-  if (pull.lastId > maxId) maxId = pull.lastId;
-  setRelayCursor(maxId);
   setLastSyncAt(new Date().toISOString());
   return { pulled };
 }

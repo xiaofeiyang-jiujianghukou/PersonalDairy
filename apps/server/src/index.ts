@@ -385,7 +385,8 @@ app.get('/api/relay/pull', async (req) => {
   const user = (req as AuthedRequest).user!;
   const from = String((req.query as { from?: string }).from ?? '');
   const after = Number((req.query as { after?: string }).after ?? 0) || 0;
-  const msgs = pullRelay(user.id, from, after);
+  const limit = Math.max(1, Math.min(Number((req.query as { limit?: string }).limit) || 100, 200));
+  const msgs = pullRelay(user.id, from, after, limit);
   const lastId = msgs.length ? msgs[msgs.length - 1]!.id : after;
   return { messages: msgs.map((m) => ({ id: m.id, from: m.from, payload: m.payload })), lastId };
 });
