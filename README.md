@@ -82,6 +82,11 @@ CLOUD_MODE=1 PORT=3000 pnpm --filter @diary/server start   # 或用 PM2/systemd 
 - **安全组**放行 80/443;前端构建烘焙 `VITE_API_BASE=https://你的域名`(端点固定,非用户配置)。
 - 健康检查用 **`/api/health`**(带 `/api` 前缀)。
 
+### Mode B:内容只在 PC/手机,云端纯中继/AI
+- **两端都本地优先**:手机 App(Capacitor)与桌面端(Tauri,构建烘焙 `VITE_LOCAL_FIRST=1`)数据都存本机。
+- **配对**:任一台点「显示配对码」(生成 `diary-sync:<key>`),另一台「扫描二维码」→ 建立同一同步密钥。
+- **同步**:经云端 `/api/relay` **加密中继**双向(`A推B取、B推A取、每条只投递一次`),内容端到端加密,服务器只看得到密文。
+
 ## 项目结构
 
 ```
