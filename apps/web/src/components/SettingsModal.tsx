@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { getApiBase, setApiBase, isPhoneMode, authApi } from '../api';
+import { isPhoneMode, authApi } from '../api';
 import type { BundleEnvelope } from '@diary/shared/bundle';
 import { exportCurrentToBundle, importBundleFile } from '../lib/backup';
 
@@ -15,9 +15,6 @@ function downloadEnvelope(envelope: BundleEnvelope) {
 }
 
 export default function SettingsModal({ onClose }: { onClose: () => void }) {
-  const [value, setValue] = useState(getApiBase());
-  const [saved, setSaved] = useState(false);
-
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [passphrase, setPassphrase] = useState('');
   const [busy, setBusy] = useState(false);
@@ -87,15 +84,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     }
   }
 
-  function save() {
-    setApiBase(value);
-    setSaved(true);
-    setTimeout(() => {
-      onClose();
-      window.location.reload();
-    }, 500);
-  }
-
   async function doExport() {
     if (busy) return;
     setBusy(true);
@@ -134,52 +122,25 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal-title">设置</h2>
+        <h2 className="modal-title">账户设置</h2>
 
-        <h3 className="settings-section">日记服务器</h3>
-        <p className="modal-hint">
-          留空 = 使用当前页面自带的日记服务。手机端 App 请填你电脑上日记服务的地址,例如{' '}
-          <code>http://192.168.1.10:4520</code>(需手机与电脑同一网络)。
-        </p>
+        <h3 className="settings-section">修改个人信息</h3>
+        <p className="modal-hint">绑定邮箱后可用"忘记密码";手机号 / 微信绑定即将开放。</p>
         <input
           className="settings-input"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder="http://电脑IP:4520(留空 = 同源)"
-          autoFocus
+          value={bindEmail}
+          onChange={(e) => setBindEmail(e.target.value)}
+          placeholder="you@example.com(绑定邮箱)"
+          type="email"
         />
         <div className="modal-actions">
-          <button className="ghost" onClick={onClose}>关闭</button>
-          <button className="primary" onClick={save}>{saved ? '已保存…' : '保存'}</button>
-        </div>
-
-        <h3 className="settings-section">数据备份 / 迁移</h3>
-        <p className="modal-hint">
-          导出当前设备全部日记与图片为单个文件,可在另一台设备导入合并(LWW 按最后修改取新)。
-          口令留空 = 明文文件;填写 = AES-256 加密,迁移时需同一口令。
-        </p>
-        <input
-          className="settings-input"
-          value={passphrase}
-          onChange={(e) => setPassphrase(e.target.value)}
-          placeholder="迁移包口令(可留空 = 明文)"
-          type="password"
-        />
-        <div className="modal-actions">
-          <button className="ghost" onClick={() => fileRef.current?.click()} disabled={busy}>
-            导入迁移包
-          </button>
-          <button className="primary" onClick={doExport} disabled={busy}>
-            {busy ? '处理中…' : '导出迁移包'}
+          <button className="primary" onClick={doBindEmail} disabled={bindBusy}>
+            {bindBusy ? '提交中…' : '绑定邮箱'}
           </button>
         </div>
-        <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: 'none' }} onChange={onImportFile} />
-        {msg && <p className={msgOk ? 'backup-msg ok' : 'backup-msg'}>{msg}</p>}
-        {isPhoneMode() && (
-          <p className="modal-hint">手机端数据保存在本机,迁移包即整机备份,不对外上传。</p>
-        )}
+        {bindMsg && <p className={bindOk ? 'backup-msg ok' : 'backup-msg'}>{bindMsg}</p>}
 
-        <h3 className="settings-section">修改密码</h3>
+        <h3 className="settings-section">重置密码</h3>
         <p className="modal-hint">输入当前密码 + 新密码(至少 6 位),提交后立即生效。</p>
         <input
           className="settings-input"
@@ -211,21 +172,33 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
         </div>
         {pwMsg && <p className={pwOk ? 'backup-msg ok' : 'backup-msg'}>{pwMsg}</p>}
 
-        <h3 className="settings-section">绑定邮箱(用于找回密码)</h3>
-        <p className="modal-hint">绑定后可"忘记密码":登录页点「忘记密码?」,验证码发到该邮箱。</p>
+        <h3 className="settings-section">数据备份 / 迁移</h3>
+        <p className="modal-hint">
+          导出当前设备全部日记与图片为单个文件,可在另一台设备导入合并。口令留空 = 明文;
+          填写 = AES-256 加密,迁移需同一口令。
+        </p>
         <input
           className="settings-input"
-          value={bindEmail}
-          onChange={(e) => setBindEmail(e.target.value)}
-          placeholder="you@example.com"
-          type="email"
+          value={passphrase}
+          onChange={(e) => setPassphrase(e.target.value)}
+          placeholder="迁移包口令(可留空 = 明文)"
+          type="password"
         />
         <div className="modal-actions">
-          <button className="primary" onClick={doBindEmail} disabled={bindBusy}>
-            {bindBusy ? '提交中…' : '绑定邮箱'}
+          <button className="ghost" onClick={() => fileRef.current?.click()} disabled={busy}>
+            导入迁移包
+          </button>
+          <button className="primary" onClick={doExport} disabled={busy}>
+            {busy ? '处理中…' : '导出迁移包'}
           </button>
         </div>
-        {bindMsg && <p className={bindOk ? 'backup-msg ok' : 'backup-msg'}>{bindMsg}</p>}
+        <input ref={fileRef} type="file" accept="application/json,.json" style={{ display: 'none' }} onChange={onImportFile} />
+        {msg && <p className={msgOk ? 'backup-msg ok' : 'backup-msg'}>{msg}</p>}
+        {isPhoneMode() && <p className="modal-hint">手机端数据保存在本机,迁移包即整机备份,不对外上传。</p>}
+
+        <div className="modal-actions">
+          <button className="ghost" onClick={onClose}>关闭</button>
+        </div>
       </div>
     </div>
   );

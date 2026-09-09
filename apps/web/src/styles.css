@@ -942,3 +942,56 @@ a {
   font-size: 13px;
   margin: 0 0 8px;
 }
+
+/* ---------- 我的 ---------- */
+.mine-account {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  margin-bottom: 16px;
+}
+.mine-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.mine-account-main { min-width: 0; }
+.mine-username { font-size: 18px; font-weight: 600; color: var(--ink); }
+.mine-sub { font-size: 13px; color: var(--ink-soft); margin-top: 3px; }
+.mine-options {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.mine-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px 20px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--ink);
+}
+.mine-row:last-child { border-bottom: none; }
+.mine-row:hover { background: #faf6ef; }
+.mine-row-label { font-size: 16px; }
+.mine-row-desc { font-size: 13px; color: var(--ink-soft); }
+.mine-row.danger .mine-row-label { color: #c62828; }
