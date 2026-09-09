@@ -53,6 +53,7 @@ export function initDb(dbPath: string): DatabaseSync {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
+      email TEXT,              -- 邮箱绑定(找回密码验证码)
       phone TEXT,              -- 预留:手机号登录
       oauth TEXT,              -- 预留:微信/OAuth 标识
       created_at TEXT NOT NULL,
@@ -83,6 +84,10 @@ export function initDb(dbPath: string): DatabaseSync {
 
 /** 检测旧版(自增整数 id)表并把数据迁移为 UUID 主键 + 墓碑结构。 */
 function migrateIfNeeded(d: DatabaseSync): void {
+  // 用户表补齐 email 列(找回密码验证码;已存在则跳过)
+  const ucols = (d.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>).map((c) => c.name);
+  if (!ucols.includes('email')) d.exec('ALTER TABLE users ADD COLUMN email TEXT');
+
   const cols = (d.prepare('PRAGMA table_info(entries)').all() as Array<{ name: string }>).map(
     (c) => c.name,
   );
@@ -361,6 +366,7 @@ export function upsertSummary(
 export interface AuthUser {
   id: number;
   username: string;
+  email: string | null;
   phone: string | null;
   oauth: string | null;
 }
@@ -396,7 +402,7 @@ export function createUser(username: string, password: string): AuthUser | null 
     const res = getDb()
       .prepare('INSERT INTO users (username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)')
       .run(username, hash, ts, ts);
-    return { id: Number(res.lastInsertRowid), username, phone: null, oauth: null };
+    return { id: Number(res.lastInsertRowid), username, email: null, phone: null, oauth: null };
   } catch {
     return null; // 用户名冲突等
   }
@@ -410,10 +416,18 @@ export function findUserByUsername(username: string): (AuthUser & { passwordHash
   return {
     id: Number(row.id),
     username: String(row.username),
+    email: row.email ? String(row.email) : null,
     phone: row.phone ? String(row.phone) : null,
     oauth: row.oauth ? String(row.oauth) : null,
     passwordHash: String(row.password_hash),
   };
+}
+
+/** 绑定/更新用户的邮箱。 */
+export function setUserEmail(userId: number, email: string): boolean {
+  const ts = nowIso();
+  const res = getDb().prepare('UPDATE users SET email = ?, updated_at = ? WHERE id = ?').run(email, ts, userId);
+  return res.changes > 0;
 }
 
 export function createSession(userId: number, ttlMs = 30 * 24 * 3600 * 1000): string {
@@ -429,16 +443,27 @@ export function createSession(userId: number, ttlMs = 30 * 24 * 3600 * 1000): st
 export function getUserByToken(token: string): AuthUser | null {
   const row = getDb()
     .prepare(
-      `SELECT u.id, u.username, u.phone, u.oauth FROM sessions s JOIN users u ON u.id = s.user_id
+      `SELECT u.id, u.username, u.email, u.phone, u.oauth FROM sessions s JOIN users u ON u.id = s.user_id
        WHERE s.token = ? AND s.expires_at > ?`,
     )
     .get(token, nowIso()) as Record<string, unknown> | undefined;
   if (!row) return null;
-  return { id: Number(row.id), username: String(row.username), phone: row.phone ? String(row.phone) : null, oauth: row.oauth ? String(row.oauth) : null };
+  return {
+    id: Number(row.id),
+    username: String(row.username),
+    email: row.email ? String(row.email) : null,
+    phone: row.phone ? String(row.phone) : null,
+    oauth: row.oauth ? String(row.oauth) : null,
+  };
 }
 
 export function deleteSession(token: string): void {
   getDb().prepare('DELETE FROM sessions WHERE token = ?').run(token);
+}
+
+/** 删除某用户的所有会话(密码重置后强制重新登录)。 */
+export function deleteSessionsForUser(userId: number): void {
+  getDb().prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
 }
 
 // ================= 跨网络中继(P2:先落桶、再取走,只存加密载荷) =================

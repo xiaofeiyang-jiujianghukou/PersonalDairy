@@ -304,6 +304,15 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ oldPassword, newPassword }),
     }),
+  bindEmail: (email: string) =>
+    http<{ ok: boolean }>('/api/auth/bind-email', { method: 'POST', body: JSON.stringify({ email }) }),
+  forgot: (username: string) =>
+    http<{ ok: boolean }>('/api/auth/forgot', { method: 'POST', body: JSON.stringify({ username }) }),
+  reset: (username: string, code: string, newPassword: string) =>
+    http<{ ok: boolean }>('/api/auth/reset', {
+      method: 'POST',
+      body: JSON.stringify({ username, code, newPassword }),
+    }),
   // 微信式扫码登录
   loginQr: () => http<{ qrId: string; dataUrl: string }>('/api/auth/login-qr', { method: 'POST' }),
   loginQrPoll: (qrId: string) =>

@@ -31,6 +31,33 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [pwMsg, setPwMsg] = useState('');
   const [pwOk, setPwOk] = useState(false);
 
+  const [bindEmail, setBindEmail] = useState('');
+  const [bindBusy, setBindBusy] = useState(false);
+  const [bindMsg, setBindMsg] = useState('');
+  const [bindOk, setBindOk] = useState(false);
+
+  async function doBindEmail() {
+    if (bindBusy) return;
+    setBindMsg('');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(bindEmail.trim())) {
+      setBindOk(false);
+      setBindMsg('邮箱格式不正确');
+      return;
+    }
+    setBindBusy(true);
+    try {
+      await authApi.bindEmail(bindEmail.trim());
+      setBindOk(true);
+      setBindMsg('邮箱已绑定 ✅');
+      setBindEmail('');
+    } catch (e) {
+      setBindOk(false);
+      setBindMsg((e as Error).message || '绑定失败');
+    } finally {
+      setBindBusy(false);
+    }
+  }
+
   async function doChangePassword() {
     if (pwBusy) return;
     setPwMsg('');
@@ -183,6 +210,22 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         {pwMsg && <p className={pwOk ? 'backup-msg ok' : 'backup-msg'}>{pwMsg}</p>}
+
+        <h3 className="settings-section">绑定邮箱(用于找回密码)</h3>
+        <p className="modal-hint">绑定后可"忘记密码":登录页点「忘记密码?」,验证码发到该邮箱。</p>
+        <input
+          className="settings-input"
+          value={bindEmail}
+          onChange={(e) => setBindEmail(e.target.value)}
+          placeholder="you@example.com"
+          type="email"
+        />
+        <div className="modal-actions">
+          <button className="primary" onClick={doBindEmail} disabled={bindBusy}>
+            {bindBusy ? '提交中…' : '绑定邮箱'}
+          </button>
+        </div>
+        {bindMsg && <p className={bindOk ? 'backup-msg ok' : 'backup-msg'}>{bindMsg}</p>}
       </div>
     </div>
   );

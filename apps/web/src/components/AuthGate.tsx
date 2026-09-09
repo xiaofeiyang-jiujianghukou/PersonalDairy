@@ -2,17 +2,25 @@ import { useEffect, useState } from 'react';
 import { authApi, setToken } from '../api';
 
 export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
-  const [mode, setMode] = useState<'login' | 'register' | 'qr'>('login');
+  const [mode, setMode] = useState<'login' | 'register' | 'qr' | 'forgot'>('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
   const [qr, setQr] = useState<{ qrId: string; dataUrl: string } | null>(null);
+
+  // 忘记密码
+  const [fStep, setFStep] = useState<'send' | 'reset'>('send');
+  const [fCode, setFCode] = useState('');
+  const [fNewPw, setFNewPw] = useState('');
+  const [fConfirm, setFConfirm] = useState('');
 
   async function submit() {
     if (!username.trim() || !password) return;
     setBusy(true);
     setError(null);
+    setOk(null);
     try {
       const fn = mode === 'login' ? authApi.login : authApi.register;
       const r = await fn(username.trim(), password);
@@ -31,6 +39,54 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
       setQr(await authApi.loginQr());
     } catch (e) {
       setError((e as Error).message);
+    }
+  }
+
+  async function sendForgot() {
+    if (!username.trim()) return;
+    setBusy(true);
+    setError(null);
+    setOk(null);
+    try {
+      await authApi.forgot(username.trim());
+      setFStep('reset');
+      setOk('验证码已发送到你的绑定邮箱(若没收到,见服务器日志/检查绑定邮箱)。');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doReset() {
+    if (!username.trim() || !fCode.trim() || !fNewPw) return;
+    setError(null);
+    setOk(null);
+    if (fNewPw.length < 6) {
+      setError('新密码至少 6 位');
+      return;
+    }
+    if (fNewPw !== fConfirm) {
+      setError('两次输入的新密码不一致');
+      return;
+    }
+    setBusy(true);
+    try {
+      await authApi.reset(username.trim(), fCode.trim(), fNewPw);
+      setOk('密码已重置 ✅,用新密码登录。');
+      setTimeout(() => {
+        setMode('login');
+        setPassword('');
+        setFStep('send');
+        setFCode('');
+        setFNewPw('');
+        setFConfirm('');
+        setOk(null);
+      }, 1200);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -72,10 +128,77 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
     );
   }
 
+  if (mode === 'forgot') {
+    return (
+      <div className="auth-gate">
+        <div className="auth-card">
+          <h1 className="auth-title">忘记密码</h1>
+          <p className="auth-sub">{fStep === 'send' ? '输入用户名,验证码会发到绑定邮箱' : '输入验证码并设置新密码'}</p>
+
+          {fStep === 'send' ? (
+            <>
+              <input
+                className="settings-input"
+                placeholder="用户名"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoFocus
+              />
+              {ok && <p className="ok">{ok}</p>}
+              {error && <p className="err">{error}</p>}
+              <div className="auth-actions">
+                <button className="ghost" onClick={() => setMode('login')}>返回</button>
+                <button className="primary" onClick={sendForgot} disabled={busy || !username.trim()}>
+                  {busy ? '发送中…' : '发送验证码'}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <input
+                className="settings-input"
+                placeholder="6 位验证码"
+                value={fCode}
+                onChange={(e) => setFCode(e.target.value)}
+                autoFocus
+              />
+              <input
+                className="settings-input"
+                type="password"
+                placeholder="新密码(至少 6 位)"
+                value={fNewPw}
+                onChange={(e) => setFNewPw(e.target.value)}
+                style={{ marginTop: 8 }}
+              />
+              <input
+                className="settings-input"
+                type="password"
+                placeholder="再次输入新密码"
+                value={fConfirm}
+                onChange={(e) => setFConfirm(e.target.value)}
+                style={{ marginTop: 8 }}
+              />
+              {ok && <p className="ok">{ok}</p>}
+              {error && <p className="err">{error}</p>}
+              <div className="auth-actions">
+                <button className="ghost" onClick={() => { setFStep('send'); setError(null); }}>
+                  重新发送
+                </button>
+                <button className="primary" onClick={doReset} disabled={busy || !fCode.trim() || !fNewPw}>
+                  {busy ? '重置中…' : '重置密码'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="auth-gate">
       <div className="auth-card">
-        <h1 className="auth-title">我的日记</h1>
+        <h1 className="auth-title">PersonalDiary</h1>
         <p className="auth-sub">{mode === 'login' ? '登录以继续' : '创建一个账号'}</p>
         <input
           className="settings-input"
@@ -92,16 +215,20 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
           onChange={(e) => setPassword(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && submit()}
         />
+        {ok && <p className="ok">{ok}</p>}
         {error && <p className="err">{error}</p>}
         <div className="auth-actions">
           <button className="primary" onClick={submit} disabled={busy || !username.trim() || !password}>
             {busy ? '请稍候…' : mode === 'login' ? '登录' : '注册'}
           </button>
-          <button className="ghost" onClick={() => { setMode('qr'); }}>
+          <button className="ghost" onClick={() => { setMode('qr'); setError(null); }}>
             扫码登录
           </button>
           <button className="ghost" onClick={() => { setMode((m) => (m === 'login' ? 'register' : 'login')); setError(null); }}>
             {mode === 'login' ? '没有账号?注册' : '已有账号?登录'}
+          </button>
+          <button className="ghost" onClick={() => { setMode('forgot'); setError(null); setOk(null); }}>
+            忘记密码?
           </button>
         </div>
         <p className="auth-hint">手机号登录、微信登录即将开放(本期仅用户名+密码、扫码)。</p>

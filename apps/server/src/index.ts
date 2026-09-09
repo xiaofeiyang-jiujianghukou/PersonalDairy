@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
@@ -35,15 +35,18 @@ import {
   findUserByUsername,
   verifyPassword,
   changePassword,
+  setUserEmail,
   createSession,
   getUserByToken,
   deleteSession,
+  deleteSessionsForUser,
   putRelay,
   pullRelay,
 } from './db.js';
 import { getTextProvider, getVisionProvider } from './ai/index.js';
 import { summarizeMonth } from './ai/summary.js';
 import { chatWithDiary, type CompanionMessage } from './ai/companion.js';
+import { sendResetEmail } from './mail.js';
 import {
   entriesContainImages,
   imageIdFromDataUrl,
@@ -134,6 +137,62 @@ app.post('/api/auth/change-password', { preHandler: requireAuth }, async (req, r
     return reply.code(400).send({ error: '当前密码错误' });
   }
   return changePassword(u.id, newPw) ? { ok: true } : reply.code(500).send({ error: '修改失败' });
+});
+
+// ---------- 忘记密码:绑定邮箱 → 邮件验证码 → 重置 ----------
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const CODE_TTL = 15 * 60 * 1000;
+const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+interface PendingReset {
+  codeHash: string;
+  expires: number;
+  attempts: number;
+}
+const pendingResets = new Map<string, PendingReset>();
+
+// 绑定邮箱(找回密码需先绑一个邮箱)
+app.post('/api/auth/bind-email', { preHandler: requireAuth }, async (req, reply) => {
+  const u = (req as AuthedRequest).user!;
+  const email = (req.body as { email?: string } | null)?.email?.trim() ?? '';
+  if (!EMAIL_RE.test(email)) return reply.code(400).send({ error: '邮箱格式不正确' });
+  return setUserEmail(u.id, email) ? { ok: true } : reply.code(500).send({ error: '绑定失败' });
+});
+
+// 申请找回:给已绑定邮箱发 6 位验证码(不暴露账号是否存在)
+app.post('/api/auth/forgot', async (req, reply) => {
+  const username = ((req.body as { username?: string } | null)?.username ?? '').trim();
+  if (!username) return reply.code(400).send({ error: '请输入用户名' });
+  const user = findUserByUsername(username);
+  if (user && user.email) {
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    pendingResets.set(username, { codeHash: sha(code), expires: Date.now() + CODE_TTL, attempts: 0 });
+    const r = await sendResetEmail(user.email, code, username);
+    if (!r.ok) return reply.code(500).send({ error: `验证码邮件发送失败:${r.note}` });
+  }
+  return { ok: true };
+});
+
+// 用验证码重置密码
+app.post('/api/auth/reset', async (req, reply) => {
+  const body = (req.body ?? {}) as { username?: string; code?: string; newPassword?: string };
+  const username = (body.username ?? '').trim();
+  const code = (body.code ?? '').trim();
+  const newPw = body.newPassword ?? '';
+  if (!newPw || newPw.length < 6) return reply.code(400).send({ error: '新密码至少 6 位' });
+  const pr = pendingResets.get(username);
+  if (!pr || pr.expires < Date.now()) return reply.code(400).send({ error: '验证码已过期,请重新获取' });
+  if (pr.attempts >= 5) {
+    pendingResets.delete(username);
+    return reply.code(400).send({ error: '尝试次数过多,请重新获取' });
+  }
+  pr.attempts++;
+  if (pr.codeHash !== sha(code)) return reply.code(400).send({ error: '验证码错误' });
+  const user = findUserByUsername(username);
+  if (!user) return reply.code(400).send({ error: '用户不存在' });
+  changePassword(user.id, newPw);
+  deleteSessionsForUser(user.id); // 强制重新登录
+  pendingResets.delete(username);
+  return { ok: true };
 });
 
 // ---------- 微信式扫码登录(电脑 QR → 手机确认 → 新设备拿 token) ----------
