@@ -105,7 +105,9 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
               setPartner('');
               stopCamera();
               setMsg('已配对:同步密钥已建立,正在自动同步…');
-              void autoSync(); // 扫码即同步(全量)
+              void autoSync().then((r) => {
+                setMsg(r.ok ? `同步完成:拉取并合并 ${r.pulled ?? 0} 条。` : '同步失败,请检查网络或同步密钥。');
+              });
               return;
             }
             if (data.startsWith('diary-login:')) {
