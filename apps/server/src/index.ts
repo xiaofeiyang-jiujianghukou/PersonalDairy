@@ -47,12 +47,13 @@ import {
   entriesContainImages,
   imageIdFromDataUrl,
   decodeImageDataUrl,
+  decodeMediaDataUrl,
   saveImage,
   readImage,
   listImageIds,
   normalizeLegacyImageRefs,
 } from './images.js';
-import { detectImageMime } from '@diary/shared/images';
+import { detectImageMime, detectMediaMime } from '@diary/shared/images';
 import { decryptObject, encryptObject, generateSyncKey } from '@diary/shared/syncCrypto';
 
 const config = loadConfig();
@@ -314,22 +315,22 @@ app.post('/api/sync', async (req, reply) => {
   const since = typeof body?.since === 'string' && body.since ? body.since : '';
   const applied = applySyncedEntries(entries);
 
-  // 存入对方送来的图片(按内容哈希,幂等去重)
+  // 存入对方送来的媒体(图片/视频,按内容哈希,幂等去重)
   for (const img of body?.images ?? []) {
     if (!img || typeof img.dataUrl !== 'string') continue;
-    const decoded = decodeImageDataUrl(img.dataUrl);
+    const decoded = decodeMediaDataUrl(img.dataUrl);
     if (!decoded) continue;
     const id = img.id && /^[0-9a-f]{16,64}$/.test(img.id) ? img.id : imageIdFromDataUrl(img.dataUrl);
     saveImage(config.imagesDir, id, decoded.bytes);
   }
 
-  // 返回本机有、但对方没有的图片(逐次补齐,已拥有的不再重复传)
+  // 返回本机有、但对方没有的媒体(逐次补齐,已拥有的不再重复传)
   const have = new Set<string>(body?.localImageIds ?? []);
   const missing = listImageIds(config.imagesDir)
     .filter((id) => !have.has(id))
     .map((id) => {
       const bytes = readImage(config.imagesDir, id);
-      return bytes ? { id, dataUrl: `data:${detectImageMime(bytes)};base64,${bytes.toString('base64')}` } : null;
+      return bytes ? { id, dataUrl: `data:${detectMediaMime(bytes)};base64,${bytes.toString('base64')}` } : null;
     })
     .filter(Boolean);
 
@@ -504,7 +505,7 @@ app.get('/api/export/bundle', async (_req, reply) => {
   const images = listImageIds(config.imagesDir)
     .map((id) => {
       const bytes = readImage(config.imagesDir, id);
-      return bytes ? { id, dataUrl: `data:${detectImageMime(bytes)};base64,${bytes.toString('base64')}` } : null;
+      return bytes ? { id, dataUrl: `data:${detectMediaMime(bytes)};base64,${bytes.toString('base64')}` } : null;
     })
     .filter((x): x is { id: string; dataUrl: string } => Boolean(x));
   const bundle = {
@@ -534,7 +535,7 @@ app.post('/api/import/bundle', async (req, reply) => {
   let imagesImported = 0;
   for (const img of (b as { images?: Array<{ id?: string; dataUrl?: string }> }).images ?? []) {
     if (!img || typeof img.dataUrl !== 'string') continue;
-    const decoded = decodeImageDataUrl(img.dataUrl);
+    const decoded = decodeMediaDataUrl(img.dataUrl);
     if (!decoded) continue;
     const id = img.id && /^[0-9a-f]{16,64}$/.test(img.id) ? img.id : imageIdFromDataUrl(img.dataUrl);
     if (!readImage(config.imagesDir, id)) {
@@ -584,9 +585,10 @@ app.get('/api/uploads/:name', async (req, reply) => {
 app.post('/api/images', async (req, reply) => {
   const dataUrl = (req.body as { dataUrl?: string } | null)?.dataUrl;
   if (typeof dataUrl !== 'string') return reply.code(400).send({ error: '缺少图片数据' });
-  const decoded = decodeImageDataUrl(dataUrl);
-  if (!decoded) return reply.code(400).send({ error: '仅支持 PNG / JPEG / GIF / WebP 图片' });
-  if (decoded.bytes.length > 32 * 1024 * 1024) return reply.code(413).send({ error: '图片过大(最大 32MB)' });
+  const decoded = decodeMediaDataUrl(dataUrl);
+  if (!decoded || !decoded.ext.match(/^(png|jpe?g|gif|webp)$/))
+    return reply.code(400).send({ error: '仅支持 PNG / JPEG / GIF / WebP 图片' });
+  if (decoded.bytes.length > 64 * 1024 * 1024) return reply.code(413).send({ error: '媒体过大(最大 64MB)' });
 
   const id = imageIdFromDataUrl(dataUrl);
   saveImage(config.imagesDir, id, decoded.bytes);
@@ -595,10 +597,30 @@ app.post('/api/images', async (req, reply) => {
 
 app.get('/api/images/:id', async (req, reply) => {
   const id = (req.params as { id: string }).id;
-  if (!/^[0-9a-f]{16,64}$/.test(id)) return reply.code(404).send({ error: '图片不存在' });
+  if (!/^[0-9a-f]{16,64}$/.test(id)) return reply.code(404).send({ error: '媒体不存在' });
   const bytes = readImage(config.imagesDir, id);
-  if (!bytes) return reply.code(404).send({ error: '图片不存在' });
-  return reply.type(detectImageMime(bytes)).send(bytes);
+  if (!bytes) return reply.code(404).send({ error: '媒体不存在' });
+  return reply.type(detectMediaMime(bytes)).send(bytes);
+});
+
+// ---------- 媒体(图片 + 视频)统一上传/取用 ----------
+app.post('/api/media', async (req, reply) => {
+  const dataUrl = (req.body as { dataUrl?: string } | null)?.dataUrl;
+  if (typeof dataUrl !== 'string') return reply.code(400).send({ error: '缺少媒体数据' });
+  const decoded = decodeMediaDataUrl(dataUrl);
+  if (!decoded) return reply.code(400).send({ error: '仅支持图片(PNG/JPEG/GIF/WebP)或视频(MP4/WebM/MOV)' });
+  if (decoded.bytes.length > 64 * 1024 * 1024) return reply.code(413).send({ error: '媒体过大(最大 64MB)' });
+  const id = imageIdFromDataUrl(dataUrl);
+  saveImage(config.imagesDir, id, decoded.bytes);
+  return reply.code(201).send({ id });
+});
+
+app.get('/api/media/:id', async (req, reply) => {
+  const id = (req.params as { id: string }).id;
+  if (!/^[0-9a-f]{16,64}$/.test(id)) return reply.code(404).send({ error: '媒体不存在' });
+  const bytes = readImage(config.imagesDir, id);
+  if (!bytes) return reply.code(404).send({ error: '媒体不存在' });
+  return reply.type(detectMediaMime(bytes)).send(bytes);
 });
 
 // ---------- 静态托管(生产模式:把构建好的前端一并伺服) ----------

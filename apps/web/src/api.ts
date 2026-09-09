@@ -7,10 +7,10 @@ import type {
   SummaryReadResult,
 } from '@diary/shared';
 import { reconcileFull } from '@diary/shared/sync';
-import { extractDiaryImgRefs } from '@diary/shared/images';
+import { extractMediaIds } from '@diary/shared/images';
 import { decryptObject, encryptObject } from '@diary/shared/syncCrypto';
 import { IdbBackend, createLocalApi, listImageIds, type LocalBackend } from './lib/localStore';
-import { exportImagesFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
+import { exportMediaFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
 
 // 端点烘焙原则:生产构建用 VITE_API_BASE(固定云服务域,非用户配置);
 // 测试阶段可用 localStorage 覆盖(即"服务端地址"设置)。
@@ -329,11 +329,11 @@ export async function syncNow(): Promise<{ applied: number; pulled: number; part
   const ours = await getLocalBackend().getAll(); // 含墓碑
   const delta = ours.filter((e) => !since || e.updatedAt > since); // 增量条目
 
-  // 只推送增量条目引用到的图片
+  // 只推送增量条目引用到的媒体(图片 + 视频)
   const deltaImgIds = new Set<string>();
-  for (const e of delta) for (const id of extractDiaryImgRefs(e.content)) deltaImgIds.add(id);
-  const pushImages = await exportImagesFor([...deltaImgIds]);
-  const localImageIds = await listImageIds(); // 本机全部图片 id,让服务端只补缺失的
+  for (const e of delta) for (const id of extractMediaIds(e.content)) deltaImgIds.add(id);
+  const pushImages = await exportMediaFor([...deltaImgIds]);
+  const localImageIds = await listImageIds(); // 本机全部媒体 id,让服务端只补缺失的
 
   const syncKey = getSyncKey();
   const payload = { since, entries: delta, images: pushImages, localImageIds };
@@ -412,8 +412,8 @@ export async function relaySyncNow(): Promise<{ pulled: number }> {
   const ours = await getLocalBackend().getAll();
   const delta = ours.filter((e) => !since || e.updatedAt > since);
   const deltaImgIds = new Set<string>();
-  for (const e of delta) for (const id of extractDiaryImgRefs(e.content)) deltaImgIds.add(id);
-  const pushImages = await exportImagesFor([...deltaImgIds]);
+  for (const e of delta) for (const id of extractMediaIds(e.content)) deltaImgIds.add(id);
+  const pushImages = await exportMediaFor([...deltaImgIds]);
   const localImageIds = await listImageIds();
   const deviceId = getDeviceId();
   const payload = { since, entries: delta, images: pushImages, localImageIds };

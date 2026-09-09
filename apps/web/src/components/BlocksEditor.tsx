@@ -5,13 +5,13 @@ import {
   type ChangeEvent,
   type ClipboardEvent,
 } from 'react';
-import { uploadImage } from '../lib/image';
+import { uploadMedia } from '../lib/image';
 import ResolvedImage from './ResolvedImage';
 import { newId, type Block } from '../lib/blocks';
 
 /**
- * 块编辑器:文字是可直接编辑的文本框,图片是内联显示的真实图片。
- * 粘贴/选图后,图片当场出现在文字中间,可在其上下继续写。
+ * 块编辑器:文字是可直接编辑的文本框,图片/视频是内联显示的真实媒体。
+ * 粘贴/按钮(拍照/相册/录像/视频)后,媒体当场出现在文字中间,可在其上下继续写。
  */
 export default function BlocksEditor({
   blocks,
@@ -22,10 +22,12 @@ export default function BlocksEditor({
 }) {
   const [uploading, setUploading] = useState(false);
   const [pendingFocus, setPendingFocus] = useState<string | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const imgUploadRef = useRef<HTMLInputElement>(null); // 相册选图
+  const imgCaptureRef = useRef<HTMLInputElement>(null); // 拍照
+  const vidUploadRef = useRef<HTMLInputElement>(null); // 视频文件
+  const vidCaptureRef = useRef<HTMLInputElement>(null); // 录像
   const taRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
-  // 每次 blocks 变化后,重算各文本框高度(自动增高)
   useEffect(() => {
     for (const b of blocks) {
       if (b.kind !== 'text') continue;
@@ -37,7 +39,6 @@ export default function BlocksEditor({
     }
   }, [blocks]);
 
-  // 图片插入后,把焦点放到图片下方的文本框
   useEffect(() => {
     if (pendingFocus) {
       const ta = taRefs.current[pendingFocus];
@@ -53,11 +54,11 @@ export default function BlocksEditor({
     onChange(blocks.map((b) => (b.id === id ? { ...b, text } : b)));
   }
 
-  function removeImage(id: string) {
+  function removeMedia(id: string) {
     onChange(blocks.filter((b) => b.id !== id));
   }
 
-  async function insertImage(index: number, start: number, end: number, file: File) {
+  async function insertMedia(index: number, start: number, end: number, file: File) {
     const block = blocks[index];
     if (!block || block.kind !== 'text') return;
     const before = block.text.slice(0, start);
@@ -65,11 +66,12 @@ export default function BlocksEditor({
     const afterId = newId();
     setUploading(true);
     try {
-      const url = await uploadImage(file);
+      const url = await uploadMedia(file);
+      const kind: Block['kind'] = url.startsWith('diary-video:') ? 'video' : 'image';
       const next = [...blocks];
       const inserted: Block[] = [
         { id: block.id, kind: 'text', text: before },
-        { id: newId(), kind: 'image', url },
+        { id: newId(), kind, url },
         { id: afterId, kind: 'text', text: after },
       ];
       next.splice(index, 1, ...inserted);
@@ -94,20 +96,20 @@ export default function BlocksEditor({
     const items = cd.items;
     if (items) {
       for (const item of Array.from(items)) {
-        if (item.kind === 'file' && item.type.startsWith('image/')) {
+        if (item.kind === 'file' && (item.type.startsWith('image/') || item.type.startsWith('video/'))) {
           const file = item.getAsFile();
           if (file) {
             e.preventDefault();
-            void insertImage(index, start, end, file);
+            void insertMedia(index, start, end, file);
             return;
           }
         }
       }
     }
     const file = cd.files?.[0];
-    if (file && file.type.startsWith('image/')) {
+    if (file && (file.type.startsWith('image/') || file.type.startsWith('video/'))) {
       e.preventDefault();
-      void insertImage(index, start, end, file);
+      void insertMedia(index, start, end, file);
     }
   }
 
@@ -118,20 +120,20 @@ export default function BlocksEditor({
     const last = blocks.length - 1;
     const lastBlock = blocks[last];
     if (lastBlock && lastBlock.kind === 'text') {
-      void insertImage(last, lastBlock.text.length, lastBlock.text.length, file);
+      void insertMedia(last, lastBlock.text.length, lastBlock.text.length, file);
     }
   }
 
   return (
     <div className="blocks-editor">
       {blocks.map((b, i) =>
-        b.kind === 'image' ? (
+        b.kind === 'image' || b.kind === 'video' ? (
           <div key={b.id} className="block-image">
-            <ResolvedImage src={b.url} alt="图片" />
+            <ResolvedImage src={b.url} alt={b.kind === 'video' ? '视频' : '图片'} />
             <button
               className="block-image-remove"
-              title="删除图片"
-              onClick={() => removeImage(b.id)}
+              title="删除"
+              onClick={() => removeMedia(b.id)}
             >
               ×
             </button>
@@ -144,7 +146,7 @@ export default function BlocksEditor({
             }}
             className="block-textarea"
             placeholder={
-              i === 0 ? '此刻,想写点什么……(支持 Markdown;可直接粘贴图片)' : '继续写……'
+              i === 0 ? '此刻,想写点什么……(支持 Markdown;可粘贴/插入图片或视频)' : '继续写……'
             }
             value={b.text}
             onChange={(e) => updateText(b.id, e.target.value)}
@@ -153,16 +155,24 @@ export default function BlocksEditor({
           />
         ),
       )}
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        style={{ display: 'none' }}
-        onChange={onPick}
-      />
+
+      <input ref={imgUploadRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={onPick} />
+      <input ref={imgCaptureRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={onPick} />
+      <input ref={vidUploadRef} type="file" accept="video/*" style={{ display: 'none' }} onChange={onPick} />
+      <input ref={vidCaptureRef} type="file" accept="video/*" capture="environment" style={{ display: 'none' }} onChange={onPick} />
+
       <div className="blocks-toolbar">
-        <button className="ghost" onClick={() => fileRef.current?.click()} disabled={uploading}>
-          {uploading ? '上传中…' : '图片'}
+        <button className="ghost" onClick={() => imgCaptureRef.current?.click()} disabled={uploading}>
+          {uploading ? '处理中…' : '拍照'}
+        </button>
+        <button className="ghost" onClick={() => imgUploadRef.current?.click()} disabled={uploading}>
+          相册
+        </button>
+        <button className="ghost" onClick={() => vidCaptureRef.current?.click()} disabled={uploading}>
+          录像
+        </button>
+        <button className="ghost" onClick={() => vidUploadRef.current?.click()} disabled={uploading}>
+          视频
         </button>
       </div>
     </div>

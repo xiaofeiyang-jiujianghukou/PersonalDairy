@@ -377,6 +377,12 @@ button.ghost:disabled {
   display: inline-block;
 }
 
+.img.video {
+  max-height: 40vh;
+  width: 100%;
+  background: #000;
+}
+
 .img-loading,
 .img-broken {
   display: inline-block;

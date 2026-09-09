@@ -1,6 +1,6 @@
 import { isPhoneMode } from '../api';
 import { getImage, listImageIds, putImage } from './localStore';
-import { detectImageMime, makeDiaryImgRef } from '@diary/shared/images';
+import { detectImageMime, makeDiaryImgRef, makeDiaryVideoRef } from '@diary/shared/images';
 
 /** 计算图片内容哈希 id(sha256 十六进制,与服务端一致)。 */
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
@@ -43,6 +43,66 @@ export async function uploadImage(file: File): Promise<string> {
   return makeDiaryImgRef(data.id);
 }
 
+/** 是否视频文件(按 MIME 前缀)。 */
+export function isVideoFile(file: File): boolean {
+  return file.type.startsWith('video/');
+}
+
+/**
+ * 把视频统一为引用 `diary-video:<内容哈希>`:
+ * - 手机本地优先:按内容哈希存入 IndexedDB 媒体库;
+ * - 远端:上传到服务器 /api/media,返回引用。
+ */
+export async function uploadVideo(file: File): Promise<string> {
+  if (isPhoneMode()) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const id = await sha256Hex(bytes);
+    await putImage(id, file);
+    return makeDiaryVideoRef(id);
+  }
+  const dataUrl = await fileToDataUrl(file);
+  const res = await fetch('/api/media', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataUrl }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `上传失败 (${res.status})`);
+  }
+  const data = (await res.json()) as { id: string };
+  return makeDiaryVideoRef(data.id);
+}
+
+/** 按文件类型分发:视频走 uploadVideo,图片走 uploadImage。 */
+export async function uploadMedia(file: File): Promise<string> {
+  return isVideoFile(file) ? uploadVideo(file) : uploadImage(file);
+}
+
+/**
+ * 把视频引用解析成可播放 URL(blob/data URL 或原样)。
+ * 调用方负责 revoke 返回的 object URL。
+ */
+export async function resolveVideoRef(ref: string): Promise<string> {
+  if (ref.startsWith('diary-video:')) {
+    const id = ref.slice('diary-video:'.length);
+    if (isPhoneMode()) {
+      const blob = await getImage(id);
+      return blob ? URL.createObjectURL(blob) : '';
+    }
+    const res = await fetch(`/api/media/${id}`);
+    if (!res.ok) return '';
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  }
+  return ref;
+}
+
+/** 按引用前缀分发:diary-video → 视频,diary-img/其它 → 图片。 */
+export async function resolveMediaRef(ref: string): Promise<string> {
+  return ref.startsWith('diary-video:') ? resolveVideoRef(ref) : resolveImageRef(ref);
+}
+
 /**
  * 把图片引用解析成可显示的 URL(blob/data URL 或原样)。
  * 调用方负责 revoke 返回的 object URL。
@@ -63,8 +123,8 @@ export async function resolveImageRef(ref: string): Promise<string> {
   return ref; // http / data URL 原样
 }
 
-/** Markdown 安全协议允许列表:放行 data/blob/内含图片 + 我们的 diary-img 引用。 */
-const URL_SAFE = /^(https?|data|blob|diary-img)$/i;
+/** Markdown 安全协议允许列表:放行 data/blob/图片与视频引用。 */
+const URL_SAFE = /^(https?|data|blob|diary-img|diary-video)$/i;
 
 export function allowImageUrlTransform(value: string): string {
   const url = value.trim();
@@ -84,6 +144,11 @@ export async function exportImagesFor(ids: string[]): Promise<Array<{ id: string
     if (blob) out.push({ id, dataUrl: await blobToDataUrl(blob) });
   }
   return out;
+}
+
+/** 按 id 导出媒体(图片 + 视频,同一内容寻址库)。 */
+export async function exportMediaFor(ids: string[]): Promise<Array<{ id: string; dataUrl: string }>> {
+  return exportImagesFor(ids);
 }
 
 /** 把本机图片库导出为 {id,dataUrl} 列表(供同步推送)。 */

@@ -9,6 +9,10 @@ const MIME: Record<string, string> = {
   jpeg: 'image/jpeg',
   gif: 'image/gif',
   webp: 'image/webp',
+  mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  mov: 'video/quicktime',
+  webm: 'video/webm',
 };
 
 function mimeForExt(ext: string): string {
@@ -25,10 +29,15 @@ export function imageIdFromDataUrl(dataUrl: string): string {
 
 /** 解码 dataURL 为图片字节与拓展名(失败返回 null)。 */
 export function decodeImageDataUrl(dataUrl: string): { bytes: Buffer; ext: string } | null {
-  const m = /^data:(image\/(?:png|jpe?g|gif|webp));base64,(.+)$/i.exec(dataUrl);
+  return decodeMediaDataUrl(dataUrl);
+}
+
+/** 解码 dataURL 为媒体(图片或视频)字节与拓展名(失败返回 null)。 */
+export function decodeMediaDataUrl(dataUrl: string): { bytes: Buffer; ext: string } | null {
+  const m = /^data:((?:image|video)\/[a-z0-9.+-]+);base64,(.+)$/i.exec(dataUrl);
   if (!m) return null;
   const mime = m[1]!.toLowerCase();
-  const ext = mime === 'image/jpeg' ? 'jpg' : mime.split('/')[1]!;
+  const ext = mime === 'image/jpeg' ? 'jpg' : mime === 'video/mp4' ? 'mp4' : mime === 'video/quicktime' ? 'mov' : mime.split('/')[1]!;
   const bytes = Buffer.from(m[2]!, 'base64');
   if (bytes.length === 0) return null;
   return { bytes, ext };

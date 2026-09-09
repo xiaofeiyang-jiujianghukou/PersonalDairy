@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
-import { resolveImageRef } from '../lib/image';
+import { resolveMediaRef } from '../lib/image';
 
-/** 把图片引用(diary-img:<hash>/uploads/url/data URL)异步解析为可显示 URL。 */
+/** 把媒体引用(diary-video:/diary-img:/uploads/url/data URL)异步解析为可显示 URL。
+ *  视频引用渲染为 <video>,图片渲染为 <img>。 */
 export default function ResolvedImage({ src, alt }: { src?: string; alt?: string }) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const isVideo = !!src && src.startsWith('diary-video:');
 
   useEffect(() => {
     let alive = true;
@@ -15,7 +17,7 @@ export default function ResolvedImage({ src, alt }: { src?: string; alt?: string
       setFailed(true);
       return;
     }
-    resolveImageRef(src)
+    resolveMediaRef(src)
       .then((u) => {
         if (!alive) return;
         if (u) {
@@ -32,7 +34,11 @@ export default function ResolvedImage({ src, alt }: { src?: string; alt?: string
     };
   }, [src]);
 
-  if (failed) return <span className="img-broken">图片</span>;
-  if (!url) return <span className="img-loading">图片…</span>;
-  return <img className="img" src={url} alt={alt || ''} />;
+  if (failed) return <span className="img-broken">{isVideo ? '视频' : '图片'}</span>;
+  if (!url) return <span className="img-loading">{isVideo ? '视频…' : '图片…'}</span>;
+  return isVideo ? (
+    <video className="img video" src={url} controls playsInline />
+  ) : (
+    <img className="img" src={url} alt={alt || ''} />
+  );
 }
