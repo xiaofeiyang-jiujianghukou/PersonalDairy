@@ -66,6 +66,22 @@ AI 供应商可插拔(见 `apps/server/src/ai/provider.ts`)。
 - 同步密钥存电脑 `data/synckey` + 手机 localStorage,扫码配对时建立;同步负载 AES-256-GCM 加密,仅两端能解。
 - AI 密钥在 `.env`,不入库、不进 Git。
 
+## 云端部署(可选)
+
+> 架构原则:服务端只持**账号身份 + 加密中继/AI**,不存日记内容。用下面的 `CLOUD_MODE=1` 一键满足。
+
+```bash
+# 在阿里云 ECS(装好 Node ≥ 22.5)上:
+git clone <repo> && cd <repo> && pnpm install
+CLOUD_MODE=1 PORT=3000 pnpm --filter @diary/server start   # 或用 PM2/systemd 常驻
+```
+
+- **`CLOUD_MODE=1`**:禁用 `/api/entries|search|images|uploads|export|import|summary|sync|qr`(返回 403),
+  只保留 `health` / `auth`(身份)/ `relay`(加密中继)/ `summarize` / `companion`(AI)——**日记内容不上云**。
+- **必须 HTTPS**:令牌走 Bearer,中继是端到端加密的,但 token 不能走明文。用 **Nginx 反代 + Let's Encrypt**(`certbot --nginx -d 你的域名`)。
+- **安全组**放行 80/443;前端构建烘焙 `VITE_API_BASE=https://你的域名`(端点固定,非用户配置)。
+- 健康检查用 **`/api/health`**(带 `/api` 前缀)。
+
 ## 项目结构
 
 ```
