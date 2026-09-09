@@ -44,7 +44,7 @@ const OFFSET_TTL = 30 * 24 * 3600; // 设备游标 30 天过期(淘汰不再同�
 export async function relayPush(uid: number, deviceId: string, payload: string): Promise<number> {
   const r = c();
   const seq = await r.incr(seqKey(uid));
-  await r.xadd(evKey(uid), `${seq}-0`, 'deviceId', deviceId, 'payload', payload);
+  await r.xadd(evKey(uid), `${seq}-0`, 'deviceId', deviceId, 'payload', payload, 'ts', String(Date.now()));
   await maybeTrim(uid);
   return seq;
 }
@@ -110,7 +110,10 @@ async function reportOffset(uid: number, deviceId: string, seq: number): Promise
   await r.set(offKey(uid, deviceId), String(seq), 'EX', OFFSET_TTL);
 }
 
-/** 删除"所有终端都已消费到(seq <= min offset)"的消息,节约资源。 */
+/**
+ * 删除消息:只删"所有终端都消费到(seq <= min offset) **且** 已超过保留期(>30 天)"的,
+ * 以兼顾"省资源"与"新终端能恢复近期全量"(新终端 offset=0 → min=0 → 不删,可从头拉取)。
+ */
 async function maybeTrim(uid: number): Promise<void> {
   const r = c();
   const devices = await r.smembers(devKey(uid));
@@ -124,7 +127,14 @@ async function maybeTrim(uid: number): Promise<void> {
   );
   const minSeq = Math.min(...vals);
   if (minSeq <= 0) return;
-  // seq <= minSeq 的消息已被所有(当前活跃)终端消费,可删除
-  const stale = await r.xrange(evKey(uid), '-', `${minSeq}-0`);
-  if (stale.length) await r.xdel(evKey(uid), ...stale.map(([id]) => String(id)));
+  const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+  const rows = await r.xrange(evKey(uid), '-', `${minSeq}-0`);
+  if (!rows.length) return;
+  const del: string[] = [];
+  for (const [id, fields] of rows) {
+    let ts = 0;
+    for (let i = 0; i < fields.length; i += 2) if (fields[i] === 'ts') ts = Number(fields[i + 1] ?? '0') || 0;
+    if (ts && ts < cutoff) del.push(String(id));
+  }
+  if (del.length) await r.xdel(evKey(uid), ...del);
 }
