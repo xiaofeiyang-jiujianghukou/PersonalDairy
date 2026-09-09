@@ -32,7 +32,10 @@ import {
   getAllEntriesForSync,
   applySyncedEntries,
   createUser,
+  createUserWithHash,
   findUserByUsername,
+  findUserByEmail,
+  hashPassword,
   verifyPassword,
   changePassword,
   setUserEmail,
@@ -46,7 +49,7 @@ import {
 import { getTextProvider, getVisionProvider } from './ai/index.js';
 import { summarizeMonth } from './ai/summary.js';
 import { chatWithDiary, type CompanionMessage } from './ai/companion.js';
-import { sendResetEmail } from './mail.js';
+import { sendCodeEmail } from './mail.js';
 import {
   entriesContainImages,
   imageIdFromDataUrl,
@@ -69,6 +72,7 @@ const app = Fastify({ logger: true, bodyLimit: 64 * 1024 * 1024 }); // 64MB,容�
 await app.register(cors, { origin: true });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // ---------- 健康检查 ----------
 app.get('/api/health', async () => ({
@@ -95,11 +99,61 @@ const requireAuth = async (req: unknown, reply: { code: (n: number) => { send: (
   r.user = { id: user.id, username: user.username };
 };
 
+// 注册(第一步):校验 + 发邮箱验证码,验证通过后才建账号
+interface PendingReg {
+  email: string;
+  passwordHash: string;
+  codeHash: string;
+  expires: number;
+  attempts: number;
+}
+const pendingRegs = new Map<string, PendingReg>();
+
 app.post('/api/auth/register', async (req, reply) => {
-  const { username, password } = (req.body ?? {}) as { username?: string; password?: string };
+  const { username, password, email } = (req.body ?? {}) as { username?: string; password?: string; email?: string };
   if (typeof username !== 'string' || username.trim().length < 2) return reply.code(400).send({ error: '用户名至少 2 个字符' });
   if (typeof password !== 'string' || password.length < 6) return reply.code(400).send({ error: '密码至少 6 位' });
-  const user = createUser(username.trim(), password);
+  const mail = typeof email === 'string' ? email.trim() : '';
+  if (!mail || !EMAIL_RE.test(mail)) return reply.code(400).send({ error: '请填写有效邮箱' });
+  const uname = username.trim();
+  if (findUserByUsername(uname)) return reply.code(409).send({ error: '用户名已存在' });
+  if (findUserByEmail(mail)) return reply.code(409).send({ error: '该邮箱已被使用' });
+
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  pendingRegs.set(uname, {
+    email: mail,
+    passwordHash: hashPassword(password),
+    codeHash: sha(code),
+    expires: Date.now() + CODE_TTL,
+    attempts: 0,
+  });
+  const r = await sendCodeEmail(mail, code, uname, 'register');
+  if (!r.ok) {
+    pendingRegs.delete(uname);
+    return reply.code(500).send({ error: `验证码邮件发送失败:${r.note}` });
+  }
+  return { ok: true };
+});
+
+// 注册(第二步):验证邮箱验证码 → 建账号 + 登录
+app.post('/api/auth/register-confirm', async (req, reply) => {
+  const body = (req.body ?? {}) as { username?: string; code?: string };
+  const uname = (body.username ?? '').trim();
+  const code = (body.code ?? '').trim();
+  const pr = pendingRegs.get(uname);
+  if (!pr || pr.expires < Date.now()) return reply.code(400).send({ error: '验证码已过期,请重新获取' });
+  if (pr.attempts >= 5) {
+    pendingRegs.delete(uname);
+    return reply.code(400).send({ error: '尝试次数过多,请重新获取' });
+  }
+  pr.attempts++;
+  if (pr.codeHash !== sha(code)) return reply.code(400).send({ error: '验证码错误' });
+  if (findUserByUsername(uname)) {
+    pendingRegs.delete(uname);
+    return reply.code(409).send({ error: '用户名已存在' });
+  }
+  const user = createUserWithHash(uname, pr.passwordHash, pr.email);
+  pendingRegs.delete(uname);
   if (!user) return reply.code(409).send({ error: '用户名已存在' });
   const token = createSession(user.id);
   return reply.code(201).send({ token, username: user.username });
@@ -140,7 +194,6 @@ app.post('/api/auth/change-password', { preHandler: requireAuth }, async (req, r
 });
 
 // ---------- 忘记密码:绑定邮箱 → 邮件验证码 → 重置 ----------
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CODE_TTL = 15 * 60 * 1000;
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 interface PendingReset {
@@ -166,7 +219,7 @@ app.post('/api/auth/forgot', async (req, reply) => {
   if (user && user.email) {
     const code = String(Math.floor(100000 + Math.random() * 900000));
     pendingResets.set(username, { codeHash: sha(code), expires: Date.now() + CODE_TTL, attempts: 0 });
-    const r = await sendResetEmail(user.email, code, username);
+    const r = await sendCodeEmail(user.email, code, username, 'reset');
     if (!r.ok) return reply.code(500).send({ error: `验证码邮件发送失败:${r.note}` });
   }
   return { ok: true };

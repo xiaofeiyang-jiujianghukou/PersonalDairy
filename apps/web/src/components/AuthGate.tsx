@@ -5,6 +5,9 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
   const [mode, setMode] = useState<'login' | 'register' | 'qr' | 'forgot'>('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [email, setEmail] = useState('');
+  const [regStep, setRegStep] = useState<'send' | 'code'>('send');
+  const [regCode, setRegCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
@@ -22,8 +25,34 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
     setError(null);
     setOk(null);
     try {
-      const fn = mode === 'login' ? authApi.login : authApi.register;
-      const r = await fn(username.trim(), password);
+      if (mode === 'login') {
+        const r = await authApi.login(username.trim(), password);
+        setToken(r.token);
+        onAuthed();
+      } else {
+        // 注册:先发邮箱验证码
+        if (!email.trim()) {
+          setError('请填写邮箱');
+          return;
+        }
+        await authApi.register(username.trim(), email.trim(), password);
+        setRegStep('code');
+        setOk('验证码已发送到邮箱,请输入验证码完成注册。');
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmReg() {
+    if (!regCode.trim()) return;
+    setBusy(true);
+    setError(null);
+    setOk(null);
+    try {
+      const r = await authApi.registerConfirm(username.trim(), regCode.trim());
       setToken(r.token);
       onAuthed();
     } catch (e) {
@@ -200,37 +229,78 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
       <div className="auth-card">
         <h1 className="auth-title">PersonalDiary</h1>
         <p className="auth-sub">{mode === 'login' ? '登录以继续' : '创建一个账号'}</p>
-        <input
-          className="settings-input"
-          placeholder="用户名"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          autoFocus
-        />
-        <input
-          className="settings-input"
-          type="password"
-          placeholder="密码(至少 6 位)"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && submit()}
-        />
-        {ok && <p className="ok">{ok}</p>}
-        {error && <p className="err">{error}</p>}
-        <div className="auth-actions">
-          <button className="primary" onClick={submit} disabled={busy || !username.trim() || !password}>
-            {busy ? '请稍候…' : mode === 'login' ? '登录' : '注册'}
-          </button>
-          <button className="ghost" onClick={() => { setMode('qr'); setError(null); }}>
-            扫码登录
-          </button>
-          <button className="ghost" onClick={() => { setMode((m) => (m === 'login' ? 'register' : 'login')); setError(null); }}>
-            {mode === 'login' ? '没有账号?注册' : '已有账号?登录'}
-          </button>
-          <button className="ghost" onClick={() => { setMode('forgot'); setError(null); setOk(null); }}>
-            忘记密码?
-          </button>
-        </div>
+        {mode === 'register' && regStep === 'code' ? (
+          <>
+            <input className="settings-input" placeholder="用户名" value={username} onChange={(e) => setUsername(e.target.value)} disabled />
+            <input
+              className="settings-input"
+              placeholder="6 位邮箱验证码"
+              value={regCode}
+              onChange={(e) => setRegCode(e.target.value)}
+              autoFocus
+              style={{ marginTop: 8 }}
+            />
+            {ok && <p className="ok">{ok}</p>}
+            {error && <p className="err">{error}</p>}
+            <div className="auth-actions">
+              <button className="ghost" onClick={() => { setRegStep('send'); setRegCode(''); setError(null); }}>
+                重新发送
+              </button>
+              <button className="primary" onClick={confirmReg} disabled={busy || !regCode.trim()}>
+                {busy ? '注册中…' : '确认并注册'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <input
+              className="settings-input"
+              placeholder="用户名"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoFocus
+            />
+            {mode === 'register' && (
+              <input
+                className="settings-input"
+                type="email"
+                placeholder="邮箱(必填,用于找回密码)"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                style={{ marginTop: 8 }}
+              />
+            )}
+            <input
+              className="settings-input"
+              type="password"
+              placeholder="密码(至少 6 位)"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && submit()}
+              style={mode === 'register' ? { marginTop: 8 } : undefined}
+            />
+            {ok && <p className="ok">{ok}</p>}
+            {error && <p className="err">{error}</p>}
+            <div className="auth-actions">
+              <button
+                className="primary"
+                onClick={submit}
+                disabled={busy || !username.trim() || !password || (mode === 'register' && !email.trim())}
+              >
+                {busy ? '请稍候…' : mode === 'login' ? '登录' : '发送验证码'}
+              </button>
+              <button className="ghost" onClick={() => { setMode('qr'); setError(null); }}>
+                扫码登录
+              </button>
+              <button className="ghost" onClick={() => { setMode((m) => (m === 'login' ? 'register' : 'login')); setRegStep('send'); setRegCode(''); setError(null); }}>
+                {mode === 'login' ? '没有账号?注册' : '已有账号?登录'}
+              </button>
+              <button className="ghost" onClick={() => { setMode('forgot'); setError(null); setOk(null); }}>
+                忘记密码?
+              </button>
+            </div>
+          </>
+        )}
         <p className="auth-hint">手机号登录、微信登录即将开放(本期仅用户名+密码、扫码)。</p>
       </div>
     </div>

@@ -395,16 +395,29 @@ export function changePassword(userId: number, newPassword: string): boolean {
   return res.changes > 0;
 }
 
-export function createUser(username: string, password: string): AuthUser | null {
+export function createUser(username: string, password: string, email?: string | null): AuthUser | null {
   const ts = nowIso();
   const hash = hashPassword(password);
   try {
     const res = getDb()
-      .prepare('INSERT INTO users (username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)')
-      .run(username, hash, ts, ts);
-    return { id: Number(res.lastInsertRowid), username, email: null, phone: null, oauth: null };
+      .prepare('INSERT INTO users (username, password_hash, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .run(username, hash, email ?? null, ts, ts);
+    return { id: Number(res.lastInsertRowid), username, email: email ?? null, phone: null, oauth: null };
   } catch {
     return null; // 用户名冲突等
+  }
+}
+
+/** 用已哈希的密码建用户(注册邮箱验证通过后,不重复哈希)。 */
+export function createUserWithHash(username: string, passwordHash: string, email?: string | null): AuthUser | null {
+  const ts = nowIso();
+  try {
+    const res = getDb()
+      .prepare('INSERT INTO users (username, password_hash, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .run(username, passwordHash, email ?? null, ts, ts);
+    return { id: Number(res.lastInsertRowid), username, email: email ?? null, phone: null, oauth: null };
+  } catch {
+    return null;
   }
 }
 
@@ -428,6 +441,14 @@ export function setUserEmail(userId: number, email: string): boolean {
   const ts = nowIso();
   const res = getDb().prepare('UPDATE users SET email = ?, updated_at = ? WHERE id = ?').run(email, ts, userId);
   return res.changes > 0;
+}
+
+/** 按邮箱找用户(注册时判断邮箱是否已被占用)。 */
+export function findUserByEmail(email: string): { id: number; username: string } | null {
+  const row = getDb().prepare('SELECT id, username FROM users WHERE email = ?').get(email) as
+    | { id: number; username: string }
+    | undefined;
+  return row ?? null;
 }
 
 export function createSession(userId: number, ttlMs = 30 * 24 * 3600 * 1000): string {

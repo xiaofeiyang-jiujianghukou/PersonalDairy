@@ -287,10 +287,15 @@ export const companionApi = {
 
 /** 账号鉴权(始终走服务端,与本地优先无关)。 */
 export const authApi = {
-  register: (username: string, password: string) =>
-    http<{ token: string; username: string }>('/api/auth/register', {
+  register: (username: string, email: string, password: string) =>
+    http<{ ok: boolean }>('/api/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, email, password }),
+    }),
+  registerConfirm: (username: string, code: string) =>
+    http<{ token: string; username: string }>('/api/auth/register-confirm', {
+      method: 'POST',
+      body: JSON.stringify({ username, code }),
     }),
   login: (username: string, password: string) =>
     http<{ token: string; username: string }>('/api/auth/login', {
