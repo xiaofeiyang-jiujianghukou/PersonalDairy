@@ -39,6 +39,10 @@ import {
   verifyPassword,
   changePassword,
   setUserEmail,
+  unbindEmail,
+  updateProfile,
+  changeUsername,
+  getUserById,
   createSession,
   getUserByToken,
   deleteSession,
@@ -170,7 +174,33 @@ app.post('/api/auth/login', async (req, reply) => {
 
 app.get('/api/auth/me', { preHandler: requireAuth }, async (req) => {
   const u = (req as AuthedRequest).user!;
-  return { username: u.username };
+  const p = getUserById(u.id);
+  if (!p) return { username: u.username };
+  return { uid: p.uid, username: p.username, nickname: p.nickname, avatar: p.avatar, email: p.email };
+});
+
+app.post('/api/auth/update-profile', { preHandler: requireAuth }, async (req, reply) => {
+  const u = (req as AuthedRequest).user!;
+  const body = (req.body ?? {}) as { nickname?: string; avatar?: string; username?: string };
+  const p = getUserById(u.id);
+  // 改账号(半年冷却)
+  const uname = typeof body.username === 'string' ? body.username.trim() : undefined;
+  if (typeof uname === 'string' && uname !== p?.username) {
+    if (uname.length < 2) return reply.code(400).send({ error: '账号至少 2 个字符' });
+    if (findUserByUsername(uname)) return reply.code(409).send({ error: '账号已存在' });
+    if (!changeUsername(u.id, p?.usernameChangedAt ?? null, uname)) {
+      return reply.code(400).send({ error: '账号每半年只能修改一次' });
+    }
+  }
+  const nickname = typeof body.nickname === 'string' ? body.nickname : undefined;
+  const avatar = body.avatar === undefined ? undefined : body.avatar || null; // ''/null = 清空头像
+  updateProfile(u.id, { nickname, avatar });
+  return { ok: true };
+});
+
+app.post('/api/auth/unbind-email', { preHandler: requireAuth }, async (req, reply) => {
+  const u = (req as AuthedRequest).user!;
+  return unbindEmail(u.id) ? { ok: true } : reply.code(400).send({ error: '操作失败' });
 });
 
 app.post('/api/auth/logout', { preHandler: requireAuth }, async (req) => {

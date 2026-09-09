@@ -308,15 +308,18 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
-  me: () => http<{ username: string }>('/api/auth/me'),
+  me: () => http<{ uid: string | null; username: string; nickname: string | null; avatar: string | null; email: string | null }>('/api/auth/me'),
   logout: () => http<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  updateProfile: (fields: { nickname?: string; avatar?: string | null; username?: string }) =>
+    http<{ ok: boolean }>('/api/auth/update-profile', { method: 'POST', body: JSON.stringify(fields) }),
+  bindEmail: (email: string) =>
+    http<{ ok: boolean }>('/api/auth/bind-email', { method: 'POST', body: JSON.stringify({ email }) }),
+  unbindEmail: () => http<{ ok: boolean }>('/api/auth/unbind-email', { method: 'POST' }),
   changePassword: (oldPassword: string, newPassword: string) =>
     http<{ ok: boolean }>('/api/auth/change-password', {
       method: 'POST',
       body: JSON.stringify({ oldPassword, newPassword }),
     }),
-  bindEmail: (email: string) =>
-    http<{ ok: boolean }>('/api/auth/bind-email', { method: 'POST', body: JSON.stringify({ email }) }),
   forgot: (username: string) =>
     http<{ ok: boolean }>('/api/auth/forgot', { method: 'POST', body: JSON.stringify({ username }) }),
   reset: (username: string, code: string, newPassword: string) =>

@@ -51,11 +51,15 @@ export function initDb(dbPath: string): DatabaseSync {
     -- 账号鉴权(本期用户名+密码;手机号/微信登录预留)
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT NOT NULL UNIQUE,
+      uid TEXT NOT NULL UNIQUE,      -- 稳定公开用户ID(微信式,非账号)
+      username TEXT NOT NULL UNIQUE, -- 登录账号(可改,每半年一次)
       password_hash TEXT NOT NULL,
-      email TEXT,              -- 邮箱绑定(找回密码验证码)
-      phone TEXT,              -- 预留:手机号登录
-      oauth TEXT,              -- 预留:微信/OAuth 标识
+      nickname TEXT,                 -- 昵称
+      avatar TEXT,                   -- 头像(diary-img 引用)
+      username_changed_at TEXT,      -- 上次改账号时间(半年冷却)
+      email TEXT,                    -- 绑定的邮箱(可解绑)
+      phone TEXT,                    -- 预留:手机号登录
+      oauth TEXT,                    -- 预留:微信/OAuth 标识
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -84,9 +88,21 @@ export function initDb(dbPath: string): DatabaseSync {
 
 /** 检测旧版(自增整数 id)表并把数据迁移为 UUID 主键 + 墓碑结构。 */
 function migrateIfNeeded(d: DatabaseSync): void {
-  // 用户表补齐 email 列(找回密码验证码;已存在则跳过)
+  // 用户表补齐新列(找回密码/资料:uid/nickname/avatar/username_changed_at/email)
   const ucols = (d.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>).map((c) => c.name);
-  if (!ucols.includes('email')) d.exec('ALTER TABLE users ADD COLUMN email TEXT');
+  const addCol = (name: string, def: string) => {
+    if (!ucols.includes(name)) d.exec(`ALTER TABLE users ADD COLUMN ${name} ${def}`);
+  };
+  addCol('uid', 'TEXT');
+  addCol('nickname', 'TEXT');
+  addCol('avatar', 'TEXT');
+  addCol('username_changed_at', 'TEXT');
+  addCol('email', 'TEXT');
+  // 给老用户补 uid + 昵称(uid 作为稳定身份,账号可改)
+  const noUid = d.prepare('SELECT id, username FROM users WHERE uid IS NULL').all() as Array<{ id: number; username: string }>;
+  for (const u of noUid) {
+    d.prepare('UPDATE users SET uid = ?, nickname = COALESCE(nickname, username), username_changed_at = created_at WHERE id = ?').run(randomUUID(), u.id);
+  }
 
   const cols = (d.prepare('PRAGMA table_info(entries)').all() as Array<{ name: string }>).map(
     (c) => c.name,
@@ -365,7 +381,10 @@ export function upsertSummary(
 
 export interface AuthUser {
   id: number;
+  uid: string | null;
   username: string;
+  nickname: string | null;
+  avatar: string | null;
   email: string | null;
   phone: string | null;
   oauth: string | null;
@@ -398,11 +417,12 @@ export function changePassword(userId: number, newPassword: string): boolean {
 export function createUser(username: string, password: string, email?: string | null): AuthUser | null {
   const ts = nowIso();
   const hash = hashPassword(password);
+  const uid = randomUUID();
   try {
     const res = getDb()
-      .prepare('INSERT INTO users (username, password_hash, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .run(username, hash, email ?? null, ts, ts);
-    return { id: Number(res.lastInsertRowid), username, email: email ?? null, phone: null, oauth: null };
+      .prepare('INSERT INTO users (uid, username, password_hash, nickname, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(uid, username, hash, username, email ?? null, ts, ts);
+    return { id: Number(res.lastInsertRowid), uid, username, nickname: username, avatar: null, email: email ?? null, phone: null, oauth: null };
   } catch {
     return null; // 用户名冲突等
   }
@@ -411,11 +431,12 @@ export function createUser(username: string, password: string, email?: string | 
 /** 用已哈希的密码建用户(注册邮箱验证通过后,不重复哈希)。 */
 export function createUserWithHash(username: string, passwordHash: string, email?: string | null): AuthUser | null {
   const ts = nowIso();
+  const uid = randomUUID();
   try {
     const res = getDb()
-      .prepare('INSERT INTO users (username, password_hash, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .run(username, passwordHash, email ?? null, ts, ts);
-    return { id: Number(res.lastInsertRowid), username, email: email ?? null, phone: null, oauth: null };
+      .prepare('INSERT INTO users (uid, username, password_hash, nickname, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(uid, username, passwordHash, username, email ?? null, ts, ts);
+    return { id: Number(res.lastInsertRowid), uid, username, nickname: username, avatar: null, email: email ?? null, phone: null, oauth: null };
   } catch {
     return null;
   }
@@ -428,7 +449,10 @@ export function findUserByUsername(username: string): (AuthUser & { passwordHash
   if (!row) return null;
   return {
     id: Number(row.id),
+    uid: row.uid ? String(row.uid) : null,
     username: String(row.username),
+    nickname: row.nickname ? String(row.nickname) : null,
+    avatar: row.avatar ? String(row.avatar) : null,
     email: row.email ? String(row.email) : null,
     phone: row.phone ? String(row.phone) : null,
     oauth: row.oauth ? String(row.oauth) : null,
@@ -440,6 +464,47 @@ export function findUserByUsername(username: string): (AuthUser & { passwordHash
 export function setUserEmail(userId: number, email: string): boolean {
   const ts = nowIso();
   const res = getDb().prepare('UPDATE users SET email = ?, updated_at = ? WHERE id = ?').run(email, ts, userId);
+  return res.changes > 0;
+}
+
+/** 解绑邮箱。 */
+export function unbindEmail(userId: number): boolean {
+  const ts = nowIso();
+  const res = getDb().prepare('UPDATE users SET email = NULL, updated_at = ? WHERE id = ?').run(ts, userId);
+  return res.changes > 0;
+}
+
+/** 更新昵称/头像。 */
+export function updateProfile(userId: number, fields: { nickname?: string; avatar?: string | null }): boolean {
+  const sets: string[] = [];
+  const vals: Array<string | null> = [];
+  if (typeof fields.nickname === 'string') {
+    sets.push('nickname = ?');
+    vals.push(fields.nickname.trim());
+  }
+  if (fields.avatar !== undefined) {
+    sets.push('avatar = ?');
+    vals.push(fields.avatar);
+  }
+  if (!sets.length) return false;
+  sets.push('updated_at = ?');
+  vals.push(nowIso());
+  vals.push(String(userId));
+  const res = getDb().prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  return res.changes > 0;
+}
+
+/** 修改登录账号(半年冷却)。成功返回 true;冷却期返回 false。 */
+export function changeUsername(userId: number, oldChangedAt: string | null, newUsername: string): boolean {
+  const ts = nowIso();
+  const cooldown = 180 * 24 * 3600 * 1000; // 半年
+  if (oldChangedAt) {
+    const last = new Date(oldChangedAt).getTime();
+    if (Date.now() - last < cooldown) return false;
+  }
+  const res = getDb()
+    .prepare('UPDATE users SET username = ?, username_changed_at = ?, updated_at = ? WHERE id = ?')
+    .run(newUsername, ts, ts, userId);
   return res.changes > 0;
 }
 
@@ -464,14 +529,17 @@ export function createSession(userId: number, ttlMs = 30 * 24 * 3600 * 1000): st
 export function getUserByToken(token: string): AuthUser | null {
   const row = getDb()
     .prepare(
-      `SELECT u.id, u.username, u.email, u.phone, u.oauth FROM sessions s JOIN users u ON u.id = s.user_id
+      `SELECT u.id, u.uid, u.username, u.nickname, u.avatar, u.email, u.phone, u.oauth FROM sessions s JOIN users u ON u.id = s.user_id
        WHERE s.token = ? AND s.expires_at > ?`,
     )
     .get(token, nowIso()) as Record<string, unknown> | undefined;
   if (!row) return null;
   return {
     id: Number(row.id),
+    uid: row.uid ? String(row.uid) : null,
     username: String(row.username),
+    nickname: row.nickname ? String(row.nickname) : null,
+    avatar: row.avatar ? String(row.avatar) : null,
     email: row.email ? String(row.email) : null,
     phone: row.phone ? String(row.phone) : null,
     oauth: row.oauth ? String(row.oauth) : null,
@@ -480,6 +548,31 @@ export function getUserByToken(token: string): AuthUser | null {
 
 export function deleteSession(token: string): void {
   getDb().prepare('DELETE FROM sessions WHERE token = ?').run(token);
+}
+
+/** 按 id 取完整公开资料(含账号修改时间,用于展示/改资料)。 */
+export function getUserById(userId: number): {
+  id: number;
+  uid: string | null;
+  username: string;
+  nickname: string | null;
+  avatar: string | null;
+  email: string | null;
+  usernameChangedAt: string | null;
+} | null {
+  const row = getDb().prepare('SELECT id, uid, username, nickname, avatar, email, username_changed_at FROM users WHERE id = ?').get(userId) as
+    | Record<string, unknown>
+    | undefined;
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    uid: row.uid ? String(row.uid) : null,
+    username: String(row.username),
+    nickname: row.nickname ? String(row.nickname) : null,
+    avatar: row.avatar ? String(row.avatar) : null,
+    email: row.email ? String(row.email) : null,
+    usernameChangedAt: row.username_changed_at ? String(row.username_changed_at) : null,
+  };
 }
 
 /** 删除某用户的所有会话(密码重置后强制重新登录)。 */
