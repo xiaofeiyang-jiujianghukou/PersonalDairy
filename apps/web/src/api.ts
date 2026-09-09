@@ -546,10 +546,16 @@ export async function relayPullOnly(): Promise<{ pulled: number }> {
     let pageMax = cursor;
     for (const m of msgs) {
       if (m.id > pageMax) pageMax = m.id;
-      const peer = await decryptObject<{
-        entries: Entry[];
-        images?: Array<{ id: string; dataUrl: string }>;
-      }>(syncKey, JSON.parse(m.payload));
+      // 有的中继消息可能是旧密钥(< 本次派生/迁移前)留的,解不开不应阻塞整页/全量拉取 → 跳过。
+      let peer: { entries: Entry[]; images?: Array<{ id: string; dataUrl: string }> };
+      try {
+        peer = await decryptObject<{ entries: Entry[]; images?: Array<{ id: string; dataUrl: string }> }>(
+          syncKey,
+          JSON.parse(m.payload),
+        );
+      } catch {
+        continue;
+      }
       for (const img of peer.images ?? []) if (img?.dataUrl) await importImageDataUrl(img.dataUrl);
       const reconciled = reconcileFull(freshOurs, peer.entries ?? []);
       const localMap = new Map(freshOurs.map((e) => [e.id, e]));
