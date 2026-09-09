@@ -7,7 +7,7 @@ import MyView from './views/MyView';
 import AuthGate from './components/AuthGate';
 import SyncModal from './components/SyncModal';
 import { getToken } from './api';
-import { autoSync } from './lib/syncAuto';
+import { autoSync, startRelayLoop, stopRelayLoop } from './lib/syncAuto';
 
 type View =
   | { kind: 'today' }
@@ -21,9 +21,14 @@ export default function App() {
   const [view, setView] = useState<View>({ kind: 'today' });
   const [showScan, setShowScan] = useState(false);
 
-  // 打开应用:已登录且本地优先已绑定同步密钥 → 自动全量同步
+  // 打开应用:已登录且本地优先已绑定同步密钥 → 自动全量同步 + 常驻在线同步
   useEffect(() => {
-    if (authed) void autoSync();
+    if (authed) {
+      void autoSync();
+      startRelayLoop();
+    } else {
+      stopRelayLoop();
+    }
   }, [authed]);
 
   if (!authed) return <AuthGate onAuthed={() => setAuthed(true)} />;

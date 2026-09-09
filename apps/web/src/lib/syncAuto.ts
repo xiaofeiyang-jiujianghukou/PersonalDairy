@@ -2,6 +2,7 @@ import { getSyncKey, getSyncPartner, isPhoneMode, relaySyncNow, syncNow, setLast
 
 let syncing = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
+let loopTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
  * 自动同步(登录/打开 App 时):**全量**。
@@ -54,4 +55,20 @@ export function scheduleSync(delay = 1200): void {
       }
     })();
   }, delay);
+}
+
+/** 启动"在线常驻"同步:每 interval 主动经中继拉/推一次。多设备在线时,一方更新,其余端在间隔内自动拉到。 */
+export function startRelayLoop(intervalMs = 10000): void {
+  stopRelayLoop();
+  loopTimer = setInterval(() => {
+    if (!isPhoneMode() || !getSyncKey() || syncing) return;
+    void relaySyncNow().catch(() => {});
+  }, intervalMs);
+}
+
+export function stopRelayLoop(): void {
+  if (loopTimer) {
+    clearInterval(loopTimer);
+    loopTimer = null;
+  }
 }

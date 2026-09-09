@@ -72,6 +72,24 @@ export function setLastSyncAt(value: string): void {
   }
 }
 
+const RELAY_CURSOR_KEY = 'diary.relayCursor';
+/** 读中继拉取游标(已拉到的最大消息 id)。 */
+export function getRelayCursor(): number {
+  try {
+    return Number(localStorage.getItem(RELAY_CURSOR_KEY) ?? 0) || 0;
+  } catch {
+    return 0;
+  }
+}
+/** 写中继拉取游标。 */
+export function setRelayCursor(value: number): void {
+  try {
+    localStorage.setItem(RELAY_CURSOR_KEY, String(value || 0));
+  } catch {
+    /* ignore */
+  }
+}
+
 const SYNC_KEY = 'diary.syncKey';
 /** 读同步密钥(扫码配对时从二维码获取)。 */
 export function getSyncKey(): string {
@@ -483,18 +501,24 @@ export async function relaySyncNow(): Promise<{ pulled: number }> {
     });
   }
 
-  const pull = await http<{ messages: Array<{ from: string; payload: string }> }>(
-    `/api/relay/pull?from=${encodeURIComponent(deviceId)}`,
+  const cursor = getRelayCursor();
+  const pull = await http<{ messages: Array<{ id: number; from: string; payload: string }>; lastId: number }>(
+    `/api/relay/pull?from=${encodeURIComponent(deviceId)}&after=${cursor}`,
   );
+  const msgs = pull.messages ?? [];
   let pulled = 0;
-  for (const m of pull.messages) {
+  let maxId = cursor;
+  // 拉取后刷新一下本地(便于合并最新)
+  const freshOurs = await getLocalBackend().getAll();
+  for (const m of msgs) {
+    if (m.id > maxId) maxId = m.id;
     const peer = await decryptObject<{
       entries: Entry[];
       images?: Array<{ id: string; dataUrl: string }>;
     }>(syncKey, JSON.parse(m.payload));
     for (const img of peer.images ?? []) if (img?.dataUrl) await importImageDataUrl(img.dataUrl);
-    const reconciled = reconcileFull(ours, peer.entries ?? []);
-    const localMap = new Map(ours.map((e) => [e.id, e]));
+    const reconciled = reconcileFull(freshOurs, peer.entries ?? []);
+    const localMap = new Map(freshOurs.map((e) => [e.id, e]));
     const toWrite: Entry[] = [];
     for (const e of reconciled) {
       const cur = localMap.get(e.id);
@@ -505,6 +529,8 @@ export async function relaySyncNow(): Promise<{ pulled: number }> {
       pulled += toWrite.length;
     }
   }
+  if (pull.lastId > maxId) maxId = pull.lastId;
+  setRelayCursor(maxId);
   setLastSyncAt(new Date().toISOString());
   return { pulled };
 }

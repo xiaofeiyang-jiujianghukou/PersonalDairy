@@ -583,34 +583,25 @@ export function deleteSessionsForUser(userId: number): void {
 // ================= 跨网络中继(P2:先落桶、再取走,只存加密载荷) =================
 
 export function putRelay(userId: number, fromDevice: string, payload: string): void {
-  getDb()
-    .prepare('INSERT INTO relay (user_id, from_device, payload, created_at) VALUES (?, ?, ?, ?)')
+  const db = getDb();
+  db.prepare('INSERT INTO relay (user_id, from_device, payload, created_at) VALUES (?, ?, ?, ?)')
     .run(userId, fromDevice, payload, nowIso());
+  // 清理:超过 30 天的中继消息(加密,只留近期,防堆积)
+  const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+  db.prepare('DELETE FROM relay WHERE user_id=? AND created_at<?').run(userId, cutoff);
 }
 
-/** 取走"非本设备"发出的未消费载荷,并标记已消费(由对端处理)。 */
+/** 取"本设备未消费"的载荷(游标 after 之后的、非本设备发出的)。不消费、可被多端各自拉取。 */
 export function pullRelay(
   userId: number,
   exclDevice: string,
-  limit = 50,
+  after = 0,
+  limit = 100,
 ): Array<{ id: number; from: string; payload: string }> {
-  const d = getDb();
-  d.exec('BEGIN');
-  try {
-    const rows = d
-      .prepare(
-        'SELECT id, from_device, payload FROM relay WHERE user_id=? AND consumed=0 AND from_device<>? ORDER BY id ASC LIMIT ?',
-      )
-      .all(userId, exclDevice, limit) as Array<Record<string, unknown>>;
-    if (rows.length) {
-      const ids = rows.map((r) => Number(r.id));
-      const placeholders = ids.map(() => '?').join(',');
-      d.prepare(`UPDATE relay SET consumed=1 WHERE id IN (${placeholders})`).run(...ids);
-    }
-    d.exec('COMMIT');
-    return rows.map((r) => ({ id: Number(r.id), from: String(r.from_device), payload: String(r.payload) }));
-  } catch (e) {
-    d.exec('ROLLBACK');
-    throw e;
-  }
+  const rows = getDb()
+    .prepare(
+      'SELECT id, from_device, payload FROM relay WHERE user_id=? AND id>? AND from_device<>? ORDER BY id ASC LIMIT ?',
+    )
+    .all(userId, after, exclDevice, limit) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({ id: Number(r.id), from: String(r.from_device), payload: String(r.payload) }));
 }
