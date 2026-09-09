@@ -88,13 +88,19 @@ export function setSyncKey(value: string): void {
   }
 }
 
-/** 是否运行在手机 App(Capacitor)里 → 本地优先模式。 */
+/** 运行环境:手机 App(Capacitor)或 桌面壳(Tauri)或本地优先构建 → 数据存本机(IndexedDB)。 */
 function isPhoneLocal(): boolean {
-  const c = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
-  return Boolean(c?.isNativePlatform?.());
+  const w = window as unknown as {
+    Capacitor?: { isNativePlatform?: () => boolean };
+    __TAURI_INTERNALS__?: unknown;
+  };
+  if (w.Capacitor?.isNativePlatform?.()) return true; // 手机 App
+  if (w.__TAURI_INTERNALS__) return true; // Tauri 桌面壳(webview)
+  const env = (import.meta as unknown as { env?: { VITE_LOCAL_FIRST?: string } }).env?.VITE_LOCAL_FIRST;
+  return env === '1'; // 显式烘焙的本地优先构建(桌面端烘焙时设)
 }
 
-/** 对外:当前是否手机本地优先模式。 */
+/** 对外:当前是否为本地优先模式(数据在本机)。 */
 export function isPhoneMode(): boolean {
   return isPhoneLocal();
 }
@@ -186,12 +192,32 @@ function entriesHashSimple(entries: Entry[]): string {
   return (h >>> 0).toString(16);
 }
 (localApi as unknown as { summaryGenerate: unknown }).summaryGenerate = async (month: string) => {
-  const partner = getSyncPartner();
-  if (!partner) throw new Error('尚未配对电脑,无法生成小结');
-  const syncKey = getSyncKey();
   const all = await getLocalBackend().getAll();
   const entries = all.filter((e) => e.date.startsWith(month) && !e.deletedAt);
   if (entries.length === 0) throw new Error('这个月还没有日记');
+
+  // 有云端服务(base,如 https://bluesheep.vip)时走云端 /api/summarize(AI 公共能力、不落盘);
+  if (getApiBase()) {
+    const res = await http<{ content: string; model: string }>('/api/summarize', {
+      method: 'POST',
+      body: JSON.stringify({ month, entries }),
+    });
+    return {
+      summary: {
+        year: Number(month.slice(0, 4)),
+        month: Number(month.slice(5, 7)),
+        content: res.content,
+        entriesHash: entriesHashSimple(entries),
+        createdAt: new Date().toISOString(),
+      },
+      model: res.model,
+    };
+  }
+
+  // 无云端:委托配对的本地电脑(端到端加密)
+  const partner = getSyncPartner();
+  if (!partner) throw new Error('尚未配对电脑,无法生成小结');
+  const syncKey = getSyncKey();
   const payload = { month, entries };
   const raw = await httpFrom<
     { enc: { iv: string; data: string } } | { content: string; model: string }
@@ -225,8 +251,8 @@ export interface CompanionMessage {
 
 /**
  * AI 陪伴对话(公共能力,与 AI 小结同构):
- * - 手机本地优先:背景在手机本地,委托给配对的电脑(端到端加密);
- * - 电脑:本机服务端直接生成(明文,内容只在你自己的机器上处理)。
+ * - 有云端服务(base):本地优先设备直接把"对话+背景"发云端 /api/companion(AI 公共能力、不落盘);
+ * - 无云端:手机本地优先委托配对的电脑(端到端加密);电脑本机走服务端。
  */
 async function companionLocal(messages: CompanionMessage[], context: Entry[]): Promise<{ reply: string; model: string }> {
   const partner = getSyncPartner();
@@ -244,11 +270,19 @@ async function companionLocal(messages: CompanionMessage[], context: Entry[]): P
 }
 
 export const companionApi = {
-  chat: (messages: CompanionMessage[], context: Entry[]): Promise<{ reply: string; model: string }> =>
-    isPhoneLocal() ? companionLocal(messages, context) : http<{ reply: string; model: string }>('/api/companion', {
+  chat: (messages: CompanionMessage[], context: Entry[]): Promise<{ reply: string; model: string }> => {
+    // 已配置云端(base)时,本地优先也直接走云端(内容只在 AI 处理时短暂经过,不落盘)
+    if (getApiBase()) {
+      return http<{ reply: string; model: string }>('/api/companion', {
+        method: 'POST',
+        body: JSON.stringify({ messages, context }),
+      });
+    }
+    return isPhoneLocal() ? companionLocal(messages, context) : http<{ reply: string; model: string }>('/api/companion', {
       method: 'POST',
       body: JSON.stringify({ messages, context }),
-    }),
+    });
+  },
 };
 
 /** 账号鉴权(始终走服务端,与本地优先无关)。 */

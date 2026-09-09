@@ -1,11 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import jsQR from 'jsqr';
-import { authApi, isPhoneMode, getSyncPartner, setSyncPartner, setSyncKey, syncNow, relaySyncNow } from '../api';
+import QRCode from 'qrcode';
+import { generateSyncKey } from '@diary/shared/syncCrypto';
+import {
+  authApi,
+  isPhoneMode,
+  getSyncPartner,
+  setSyncPartner,
+  getSyncKey,
+  setSyncKey,
+  syncNow,
+  relaySyncNow,
+} from '../api';
 
 export default function SyncModal({ onClose }: { onClose: () => void }) {
   const phoneMode = isPhoneMode();
   const [partner, setPartner] = useState(getSyncPartner());
-  const [qr, setQr] = useState<string | null>(null);
+  const [hostQr, setHostQr] = useState<string | null>(null); // 本机展示的配对码(本地优先)
+  const [remoteQr, setRemoteQr] = useState<string | null>(null); // 服务器生成的配对码(远程桌面)
   const [scanning, setScanning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -14,12 +26,12 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
   const rafRef = useRef(0);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // 桌面(电脑)端:展示二维码,供手机扫
+  // 远程桌面(非本地优先):展示服务器二维码,供手机扫
   useEffect(() => {
     if (!phoneMode) {
       fetch('/api/qr')
         .then((r) => r.json())
-        .then((d) => setQr(d.dataUrl))
+        .then((d) => setRemoteQr(d.dataUrl))
         .catch(() => setErr('读取二维码失败,请直接在电脑上打开 http://localhost:4520'));
     }
     return () => stopCamera();
@@ -35,10 +47,28 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
 
   useEffect(() => () => stopCamera(), [stopCamera]);
 
+  /** 本地优先:生成/复用同步密钥并展示配对码(diary-sync:<key>,走云端中继,无需局域网地址)。 */
+  async function showPairQr() {
+    setErr(null);
+    setMsg(null);
+    let key = getSyncKey();
+    if (!key) {
+      key = generateSyncKey();
+      setSyncKey(key);
+    }
+    try {
+      const dataUrl = await QRCode.toDataURL(`diary-sync:${key}`, { margin: 1, width: 360 });
+      setHostQr(dataUrl);
+      setMsg('已生成配对码。用另一台设备「扫描二维码」即可建立同步密钥。');
+    } catch (e) {
+      setErr((e as Error).message || '生成二维码失败');
+    }
+  }
+
   async function startScan() {
     setErr(null);
     setMsg(null);
-    // 先进入扫描态(让 <video> 先挂载),再请求相机
+    setHostQr(null);
     setScanning(true);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
@@ -52,6 +82,7 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
       streamRef.current = stream;
       video.srcObject = stream;
       await video.play();
+
       const loop = () => {
         const v = videoRef.current;
         if (v && v.readyState === v.HAVE_ENOUGH_DATA && v.videoWidth) {
@@ -63,8 +94,17 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
           const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
           const code = jsQR(img.data, img.width, img.height);
           if (code && code.data) {
-            if (code.data.startsWith('diary-login:')) {
-              const qrId = code.data.slice('diary-login:'.length);
+            const data = code.data;
+            if (data.startsWith('diary-sync:')) {
+              const key = data.slice('diary-sync:'.length);
+              setSyncKey(key);
+              setPartner('');
+              stopCamera();
+              setMsg('已配对:同步密钥已建立(走云端加密中继)✅');
+              return;
+            }
+            if (data.startsWith('diary-login:')) {
+              const qrId = data.slice('diary-login:'.length);
               stopCamera();
               setMsg('正在确认电脑登录…');
               void (async () => {
@@ -77,14 +117,14 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
               })();
               return;
             }
-            const [u, k] = code.data.split('\n');
+            const [u, k] = data.split('\n');
             if (u) {
               setSyncPartner(u);
               setPartner(u);
             }
             if (k) setSyncKey(k);
             stopCamera();
-            setMsg(`已配对:${u ?? code.data}`);
+            setMsg(`已配对:${u ?? data}`);
             return;
           }
         }
@@ -102,8 +142,13 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
     setMsg(null);
     setBusy(true);
     try {
-      const r = await syncNow();
-      setMsg(`同步完成:推送 ${r.applied} 条改动,拉取 ${r.pulled} 条。`);
+      if (getSyncPartner()) {
+        const r = await syncNow();
+        setMsg(`同步完成:推送 ${r.applied} 条改动,拉取 ${r.pulled} 条。`);
+      } else {
+        const r = await relaySyncNow();
+        setMsg(`经中继同步完成:拉取并合并 ${r.pulled} 条。`);
+      }
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -130,50 +175,47 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2 className="modal-title">配对与同步</h2>
 
-        {phoneMode ? (
+        <p className="modal-hint">
+          数据只存在各设备本地。用「显示配对码 / 扫描二维码」在两台设备间建立同一同步密钥;
+          之后经云端**加密中继**同步(内容端到端加密,服务器看不到明文)。
+        </p>
+
+        <video
+          ref={videoRef}
+          className="qr-video"
+          playsInline
+          muted
+          style={{ display: scanning ? 'block' : 'none' }}
+        />
+
+        <div className="modal-actions">
+          <button className="ghost" onClick={showPairQr} disabled={scanning}>
+            显示配对码
+          </button>
+          <button className="ghost" onClick={stopCamera} disabled={!scanning}>
+            停止
+          </button>
+          <button className="primary" onClick={startScan} disabled={scanning}>
+            {scanning ? '扫描中…' : '扫描二维码'}
+          </button>
+          <button className="primary" onClick={doSync} disabled={busy}>
+            {busy ? '同步中…' : '立即同步'}
+          </button>
+          <button className="ghost" onClick={doRelaySync} disabled={busy}>
+            {busy ? '同步中…' : '经中继同步'}
+          </button>
+        </div>
+
+        {hostQr && (
           <>
-            <p className="modal-hint">
-              数据存在你手机本地。扫描电脑上日记服务的二维码即可配对并同步(需同一 Wi-Fi)。
-            </p>
-            {partner ? (
-              <p className="modal-hint">
-                当前配对:<code>{partner}</code>
-              </p>
-            ) : (
-              <p className="modal-hint warn">尚未配对电脑。</p>
-            )}
-            <video
-              ref={videoRef}
-              className="qr-video"
-              playsInline
-              muted
-              style={{ display: scanning ? 'block' : 'none' }}
-            />
-            <div className="modal-actions">
-              <button className="ghost" onClick={stopCamera} disabled={!scanning}>
-                停止
-              </button>
-              <button className="primary" onClick={startScan} disabled={scanning}>
-                {scanning ? '扫描中…' : '扫描电脑二维码'}
-              </button>
-              <button className="primary" onClick={doSync} disabled={busy || !partner}>
-                {busy ? '同步中…' : '立即同步'}
-              </button>
-              <button className="ghost" onClick={doRelaySync} disabled={busy}>
-                {busy ? '同步中…' : '经中继同步'}
-              </button>
-            </div>
+            <p className="modal-hint">另一台设备点「扫描二维码」扫这个码:</p>
+            <img className="qr-img" src={hostQr} alt="配对二维码" />
           </>
-        ) : (
+        )}
+        {remoteQr && !phoneMode && (
           <>
-            <p className="modal-hint">
-              用手机 App 扫下方二维码即可和这台电脑配对同步(需同一 Wi-Fi)。
-            </p>
-            {qr ? (
-              <img className="qr-img" src={qr} alt="配对二维码" />
-            ) : (
-              <p className="muted">正在生成二维码…</p>
-            )}
+            <p className="modal-hint">用手机 App 扫下方二维码即可配对同步:</p>
+            <img className="qr-img" src={remoteQr} alt="配对二维码" />
           </>
         )}
 

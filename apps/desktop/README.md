@@ -33,9 +33,11 @@ pnpm install            # 会拉取 @tauri-apps/cli
 # 若要换图标: cd apps/desktop && node scripts/gen-icons.mjs
 
 # 关键:把"服务端地址"烘焙进桌面应用(端点固定,非用户配置)
-#   在 apps/web 下建 .env.production(生产 = 你的服务端域名;本地 = 本机服务):
+#   VITE_API_BASE = 云端服务端域名;VITE_LOCAL_FIRST=1 让桌面端本地优先(数据存本机,经中继加密同步)。
+#   (本地/测试可把 VITE_API_BASE 改成本机 http://localhost:4520)
 cat > apps/web/.env.production <<'EOF'
-VITE_API_BASE=http://localhost:4520
+VITE_API_BASE=https://bluesheep.vip
+VITE_LOCAL_FIRST=1
 EOF
 
 cd apps/desktop
@@ -62,5 +64,6 @@ pnpm build              # = tauri build(先 pnpm --filter @diary/web build,再 c
 5. 或直接用「用户名 + 密码」登录(两者皆可)。
 
 ## 说明
-- 桌面端是**薄客户端**:数据由服务端持有(账号身份 + 加密中继/AI),桌面应用不含日记存储。
+- 桌面端与手机端一样**本地优先**:日记存本机(IndexedDB),云端只做**账号身份 + 加密中继 + AI**(`CLOUD_MODE=1`,不存日记)。
+- 两台设备先「显示配对码 / 扫码」建立同一同步密钥,之后经云端**加密中继**双向同步(端到端加密,服务器看不到明文)。
 - 未安装 Rust 前无法在本机 `cargo build`;本目录已给出**可构建脚手架**,在有 Rust + 系统依赖的机器上执行上述命令即可出包。

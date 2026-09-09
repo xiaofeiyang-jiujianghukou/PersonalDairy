@@ -198,6 +198,8 @@ const CLOUD_BLOCKED_PREFIXES = [
 ];
 app.addHook('onRequest', async (req, reply) => {
   const url = (req.url ?? '').split('?')[0] ?? '';
+  // 云端模式:根路径是公开的落地说明页
+  if (config.cloudMode && (url === '/' || url === '')) return;
   // 云端模式优先拦截内容端点(公网上这些会暴露/写入日记内容)
   if (config.cloudMode && CLOUD_BLOCKED_PREFIXES.some((p) => url === p || url.startsWith(`${p}/`))) {
     return reply.code(403).send({ error: '云端模式不存储日记内容,该接口已禁用' });
@@ -602,7 +604,15 @@ app.get('/api/images/:id', async (req, reply) => {
 // ---------- 静态托管(生产模式:把构建好的前端一并伺服) ----------
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const webDist = path.resolve(__dirname, '../../web/dist');
-if (fs.existsSync(webDist)) {
+
+if (config.cloudMode) {
+  // 云端模式:纯 身份 + 加密中继 + AI 服务,不伺服日记前端、不落盘内容
+  app.get('/', async () => ({
+    service: 'personal-diary-cloud',
+    ok: true,
+    note: '这是日记的云端"身份 + 加密中继 + AI"服务;日记内容只在你的 PC/手机本地。',
+  }));
+} else if (fs.existsSync(webDist)) {
   await app.register(fastifyStatic, { root: webDist });
   app.setNotFoundHandler((_req, reply) => {
     // SPA 回退到 index.html
