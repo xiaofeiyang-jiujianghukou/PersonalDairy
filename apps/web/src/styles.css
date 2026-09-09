@@ -995,3 +995,19 @@ a {
 .mine-row-label { font-size: 16px; }
 .mine-row-desc { font-size: 13px; color: var(--ink-soft); }
 .mine-row.danger .mine-row-label { color: #c62828; }
+
+/* 顶部扫码图标 */
+.scan-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+  cursor: pointer;
+}
+.scan-icon { font-size: 18px; line-height: 1; }

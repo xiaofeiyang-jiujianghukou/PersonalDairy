@@ -5,6 +5,7 @@ import DayView from './views/DayView';
 import SearchView from './views/SearchView';
 import MyView from './views/MyView';
 import AuthGate from './components/AuthGate';
+import SyncModal from './components/SyncModal';
 import { getToken } from './api';
 import { autoSync } from './lib/syncAuto';
 
@@ -18,8 +19,9 @@ type View =
 export default function App() {
   const [authed, setAuthed] = useState<boolean>(() => !!getToken());
   const [view, setView] = useState<View>({ kind: 'today' });
+  const [showScan, setShowScan] = useState(false);
 
-  // 打开应用:已登录且本地优先已配对 → 自动全量同步
+  // 打开应用:已登录且本地优先已绑定同步密钥 → 自动全量同步
   useEffect(() => {
     if (authed) void autoSync();
   }, [authed]);
@@ -43,6 +45,9 @@ export default function App() {
           <button className={view.kind === 'mine' ? 'active' : ''} onClick={() => setView({ kind: 'mine' })}>
             我的
           </button>
+          <button className="scan-btn" onClick={() => setShowScan(true)} title="扫码同步(对准另一台设备的码)">
+            <span className="scan-icon" aria-hidden>📷</span>
+          </button>
         </nav>
       </header>
 
@@ -53,6 +58,9 @@ export default function App() {
         {view.kind === 'search' && <SearchView onOpenDay={(date) => setView({ kind: 'day', date })} />}
         {view.kind === 'mine' && <MyView onOpenDay={(date) => setView({ kind: 'day', date })} />}
       </main>
+
+      {showScan && <SyncModal onClose={() => setShowScan(false)} />}
     </div>
   );
 }
+

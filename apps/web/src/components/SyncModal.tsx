@@ -199,12 +199,12 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
         {isPhone ? (
           <>
             <p className="modal-hint">
-              扫电脑「我的日记」上的配对码,即可自动同步。数据端到端加密,只在设备间传递。
+              扫另一台设备上的码,即可自动同步。数据端到端加密,只在设备间传递。
             </p>
             {getSyncKey() ? (
-              <p className="modal-hint">已配对 ✓ 打开/登录会自动同步。</p>
+              <p className="modal-hint">已连接 ✓ 打开 / 登录会自动同步。</p>
             ) : (
-              <p className="modal-hint warn">尚未配对,扫一下电脑上的码。</p>
+              <p className="modal-hint warn">扫描二维码即可同步。</p>
             )}
             <video
               ref={videoRef}
