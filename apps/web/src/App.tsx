@@ -33,7 +33,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">我的日记</div>
+        <div className="brand">PersonalDiary</div>
         <nav className="nav">
           <button
             className={view.kind === 'today' ? 'active' : ''}

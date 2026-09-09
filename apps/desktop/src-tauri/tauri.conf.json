@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "我的日记",
+  "productName": "PersonalDiary",
   "version": "0.1.0",
   "identifier": "com.personaldiary.desktop",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "我的日记",
+        "title": "PersonalDiary",
         "width": 900,
         "height": 700,
         "minWidth": 720,
@@ -28,13 +28,13 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage"],
+    "targets": ["deb"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png"
     ],
     "category": "Productivity",
-    "shortDescription": "一份只属于你的本地优先私人日记"
+    "shortDescription": "A private, local-first personal diary"
   }
 }
