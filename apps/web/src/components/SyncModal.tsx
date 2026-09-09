@@ -9,6 +9,7 @@ import {
   setSyncPartner,
   getSyncKey,
   setSyncKey,
+  setLastSyncAt,
   syncNow,
   relaySyncNow,
 } from '../api';
@@ -170,6 +171,22 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
     }
   }
 
+  // 强制全量:重置本地同步水位,让本机把"全部"日记重新推给中继(恢复丢数据的设备)
+  async function doFullRelaySync() {
+    setErr(null);
+    setMsg(null);
+    setBusy(true);
+    try {
+      setLastSyncAt(''); // 清空水位 → 下次同步推送全部
+      const r = await relaySyncNow();
+      setMsg(`强制全量同步完成:拉取并合并 ${r.pulled} 条。`);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -203,6 +220,9 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
           </button>
           <button className="ghost" onClick={doRelaySync} disabled={busy}>
             {busy ? '同步中…' : '经中继同步'}
+          </button>
+          <button className="ghost" onClick={doFullRelaySync} disabled={busy} title="清空本机同步水位,把全部日记重新推送(找回丢失的设备数据)">
+            {busy ? '同步中…' : '强制全量同步'}
           </button>
         </div>
 
