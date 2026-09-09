@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import jsQR from 'jsqr';
 import QRCode from 'qrcode';
 import { generateSyncKey } from '@diary/shared/syncCrypto';
+import { autoSync } from '../lib/syncAuto';
 import {
   authApi,
   isPhoneMode,
@@ -101,7 +102,8 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
               setSyncKey(key);
               setPartner('');
               stopCamera();
-              setMsg('已配对:同步密钥已建立(走云端加密中继)✅');
+              setMsg('已配对:同步密钥已建立,正在自动同步…');
+              void autoSync(); // 扫码即同步(全量)
               return;
             }
             if (data.startsWith('diary-login:')) {
