@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import type { Entry } from '@diary/shared';
-import { api, companionApi, type CompanionMessage } from '../api';
+import { getAllLocalEntries, companionApi, type CompanionMessage } from '../api';
 import { allowImageUrlTransform } from '../lib/image';
 import ResolvedImage from './ResolvedImage';
 
@@ -15,7 +15,7 @@ const GREETING: CompanionMessage = {
 
 async function gatherContext(): Promise<Entry[]> {
   try {
-    const all = await api.getAll();
+    const all = await getAllLocalEntries();
     return all.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 40);
   } catch {
     return [];

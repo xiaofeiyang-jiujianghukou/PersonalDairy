@@ -209,6 +209,11 @@ function getLocalBackend(): LocalBackend {
 }
 const localApi = createLocalApi(getLocalBackend());
 
+/** 读取本机(本地优先)的全部日记,供 AI 陪伴/小结等组件直接取用。 */
+export function getAllLocalEntries(): Promise<Entry[]> {
+  return getLocalBackend().getAll();
+}
+
 // 手机本地优先:AI 月度小结委托给配对的电脑(/api/summarize,端到端加密)——公共能力在服务端,可上云
 function entriesHashSimple(entries: Entry[]): string {
   const s = entries.map((e) => `${e.id}|${e.updatedAt}|${e.content}`).join('\n');
@@ -501,6 +506,17 @@ export async function relaySyncNow(): Promise<{ pulled: number }> {
     });
   }
 
+  return relayPullOnly();
+}
+
+/**
+ * 只拉取对端新消息(游标 after 之后)并合并到本地,不推送。
+ * 供"在线常驻"循环调用 —— 避免每次轮询都推送空增量导致中继膨胀。
+ */
+export async function relayPullOnly(): Promise<{ pulled: number }> {
+  const syncKey = getSyncKey();
+  if (!syncKey) throw new Error('尚未配对(无同步密钥)');
+  const deviceId = getDeviceId();
   const cursor = getRelayCursor();
   const pull = await http<{ messages: Array<{ id: number; from: string; payload: string }>; lastId: number }>(
     `/api/relay/pull?from=${encodeURIComponent(deviceId)}&after=${cursor}`,

@@ -1,4 +1,4 @@
-import { getSyncKey, getSyncPartner, isPhoneMode, relaySyncNow, syncNow, setLastSyncAt } from '../api';
+import { getSyncKey, getSyncPartner, isPhoneMode, relayPullOnly, relaySyncNow, syncNow, setLastSyncAt } from '../api';
 
 let syncing = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -57,12 +57,13 @@ export function scheduleSync(delay = 1200): void {
   }, delay);
 }
 
-/** 启动"在线常驻"同步:每 interval 主动经中继拉/推一次。多设备在线时,一方更新,其余端在间隔内自动拉到。 */
+/** 启动"在线常驻"同步:每 interval 经中继**只拉取**一次。多设备在线时,一方更新(其保存即推送),其余端在间隔内自动拉到最新。
+ * 只读不写,避免每 10s 推送空增量导致中继膨胀。 */
 export function startRelayLoop(intervalMs = 10000): void {
   stopRelayLoop();
   loopTimer = setInterval(() => {
     if (!isPhoneMode() || !getSyncKey() || syncing) return;
-    void relaySyncNow().catch(() => {});
+    void relayPullOnly().catch(() => {});
   }, intervalMs);
 }
 
