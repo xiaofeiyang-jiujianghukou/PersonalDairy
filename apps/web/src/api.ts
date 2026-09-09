@@ -551,5 +551,18 @@ export async function relayPullOnly(): Promise<{ pulled: number }> {
   return { pulled };
 }
 
+/**
+ * 长轮询即时通知:等"别人有没有新消息"(游标 after 之后)。不拉数据、不推送。
+ * 服务端挂起至有新消息(→hasNew:true)/超时(false)。拿到 hasNew 后再调 relayPullOnly 拉真实数据。
+ */
+export async function relayWaitOnce(after: number, timeoutMs = 25000): Promise<{ hasNew: boolean }> {
+  const deviceId = getDeviceId();
+  const r = await http<{ hasNew: boolean }>('/api/relay/wait', {
+    method: 'POST',
+    body: JSON.stringify({ from: deviceId, after }),
+  });
+  return { hasNew: Boolean(r?.hasNew) };
+}
+
 /** 测试辅助。 */
 export const _apiTest = { isPhoneLocal, getLocalBackend };

@@ -1,8 +1,20 @@
-import { getSyncKey, getSyncPartner, isPhoneMode, relayPullOnly, relaySyncNow, syncNow, setLastSyncAt } from '../api';
+import {
+  getRelayCursor,
+  getSyncKey,
+  getSyncPartner,
+  isPhoneMode,
+  relayPullOnly,
+  relaySyncNow,
+  relayWaitOnce,
+  syncNow,
+  setLastSyncAt,
+} from '../api';
 
 let syncing = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let loopTimer: ReturnType<typeof setInterval> | null = null;
+let loopAborted = false;
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
  * 自动同步(登录/打开 App 时):**全量**。
@@ -57,17 +69,49 @@ export function scheduleSync(delay = 1200): void {
   }, delay);
 }
 
-/** 启动"在线常驻"同步:每 interval 经中继**只拉取**一次。多设备在线时,一方更新(其保存即推送),其余端在间隔内自动拉到最新。
- * 只读不写,避免每 10s 推送空增量导致中继膨胀。 */
-export function startRelayLoop(intervalMs = 10000): void {
+/**
+ * 启动"在线常驻"同步(即时 + 克制):
+ * 主线 = 长轮询等待"有没有新消息"(服务端挂起,毫秒级唤醒),有→按游标拉取;
+ * 兜底 = 每 intervalMs 秒强制拉一次,防长轮询事件丢失 / 断线重连遗漏。
+ * 只读不写;写入只在保存时通过 scheduleSync 触发一次,避免每次轮询空推中继膨胀。
+ */
+export function startRelayLoop(intervalMs = 60000): void {
   stopRelayLoop();
+  loopAborted = false;
+  void relayWaitLoop();
   loopTimer = setInterval(() => {
     if (!isPhoneMode() || !getSyncKey() || syncing) return;
     void relayPullOnly().catch(() => {});
   }, intervalMs);
 }
 
+/** 长轮询主线:等被唤醒 → 拉数;超时 → 继续等;出错 → 退避重试。 */
+async function relayWaitLoop(): Promise<void> {
+  while (!loopAborted) {
+    if (!isPhoneMode() || !getSyncKey() || syncing) {
+      await sleep(2000);
+      continue;
+    }
+    try {
+      const cursor = getRelayCursor();
+      const r = await relayWaitOnce(cursor);
+      if (loopAborted) return;
+      if (!r.hasNew || syncing) continue;
+      syncing = true;
+      try {
+        await relayPullOnly();
+      } finally {
+        syncing = false;
+      }
+    } catch {
+      if (loopAborted) return;
+      await sleep(3000); // 出错退避,别空转
+    }
+  }
+}
+
 export function stopRelayLoop(): void {
+  loopAborted = true;
   if (loopTimer) {
     clearInterval(loopTimer);
     loopTimer = null;

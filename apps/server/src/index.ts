@@ -320,7 +320,56 @@ app.post('/api/auth/scan-confirm', { preHandler: requireAuth }, async (req, repl
   return { ok: true };
 });
 
-// ---------- P2:跨网络密文中继(先落桶、再取走;只存加密载荷,不通读) ----------
+// ---------- P2:跨网络密文中继(落桶、按游标取走;只存加密载荷) ----------
+// 在线即时通知:内存等待表 + 长轮询。客户端挂在 /api/relay/wait 等"有没有新消息",
+// 真正数据仍由 /api/relay/pull 按游标拉取(加密)。服务端只发"有新东西"的小信号,不碰内容。
+interface RelayWaiter {
+  userId: number;
+  from: string;
+  after: number;
+  finish: (hasNew: boolean) => void;
+}
+const relayWaiters = new Map<number, Set<RelayWaiter>>();
+const RELAY_WAIT_MS = 20 * 1000;
+
+function wakeRelayWaiters(userId: number, fromDevice: string): void {
+  const set = relayWaiters.get(userId);
+  if (!set) return;
+  for (const w of Array.from(set)) {
+    // 新消息来自别人 → 该等待者能立刻拉到,唤醒;来自自己则不动(避免自我唤醒的空拉)
+    if (fromDevice !== w.from) w.finish(true);
+  }
+}
+
+/** 长轮询:等待"after 之后是否有别人推送的新消息"。有→立即 hasNew;否则挂起至超时 / 被唤醒。 */
+function relayWaitOnce(userId: number, from: string, after: number): Promise<{ hasNew: boolean }> {
+  return new Promise((resolve) => {
+    let done = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (hasNew: boolean): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      const set = relayWaiters.get(userId);
+      if (set) {
+        set.delete(w);
+        if (!set.size) relayWaiters.delete(userId);
+      }
+      resolve({ hasNew });
+    };
+    timer = setTimeout(() => finish(false), RELAY_WAIT_MS);
+    const w: RelayWaiter = { userId, from, after, finish };
+    let set = relayWaiters.get(userId);
+    if (!set) {
+      set = new Set();
+      relayWaiters.set(userId, set);
+    }
+    set.add(w);
+    // 注意:不监听 req.raw 'close'(收完请求体后即触发,并非真实断连),避免误关等待;
+    // 断开的客户端最多在 RELAY_WAIT_MS 后被超时清理,由 Fastify 优雅处理写失败。
+  });
+}
+
 app.post('/api/relay/push', async (req, reply) => {
   const user = (req as AuthedRequest).user!;
   const { from, payload } = (req.body ?? {}) as { from?: string; payload?: string };
@@ -328,6 +377,7 @@ app.post('/api/relay/push', async (req, reply) => {
     return reply.code(400).send({ error: '无效的载荷' });
   }
   putRelay(user.id, from, payload);
+  wakeRelayWaiters(user.id, from);
   return { ok: true };
 });
 
@@ -338,6 +388,17 @@ app.get('/api/relay/pull', async (req) => {
   const msgs = pullRelay(user.id, from, after);
   const lastId = msgs.length ? msgs[msgs.length - 1]!.id : after;
   return { messages: msgs.map((m) => ({ id: m.id, from: m.from, payload: m.payload })), lastId };
+});
+
+// 长轮询即时通知:等"别人有没有新消息"。有→立即返回 hasNew;没有→挂起至超时/被唤醒/断开。
+app.post('/api/relay/wait', async (req) => {
+  const user = (req as AuthedRequest).user!;
+  const { from, after } = (req.body ?? {}) as { from?: string; after?: number };
+  const f = typeof from === 'string' ? from : '';
+  const a = Number(after) || 0;
+  // 已经能拉到的新消息 → 立即返回,别挂起
+  if (pullRelay(user.id, f, a, 1).length) return { hasNew: true };
+  return relayWaitOnce(user.id, f, a);
 });
 
 
