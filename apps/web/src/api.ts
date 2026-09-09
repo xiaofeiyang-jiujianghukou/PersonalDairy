@@ -8,7 +8,7 @@ import type {
 } from '@diary/shared';
 import { reconcileFull } from '@diary/shared/sync';
 import { extractMediaIds } from '@diary/shared/images';
-import { decryptObject, encryptObject } from '@diary/shared/syncCrypto';
+import { decryptObject, deriveSyncKey, encryptObject } from '@diary/shared/syncCrypto';
 import { IdbBackend, createLocalApi, listImageIds, type LocalBackend } from './lib/localStore';
 import { exportMediaFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
 import { getFetch } from './lib/net';
@@ -360,6 +360,19 @@ export const authApi = {
   scanConfirm: (qrId: string) =>
     http<{ ok: boolean }>('/api/auth/scan-confirm', { method: 'POST', body: JSON.stringify({ qrId }) }),
 };
+
+/**
+ * 登录/注册成功后:用"账号 uid + 口令"确定性派生并写入同步密钥。
+ * 这样同一账号所有设备登录后都得到同一把密钥 → 重装后只要再登录,同步密钥即恢复,
+ * 无需重新扫码配对;密钥只在本机由口令派生,服务端从不知晓。
+ */
+export async function deriveSyncKeyFromPassword(password: string): Promise<string> {
+  const me = await authApi.me();
+  if (!me?.uid) throw new Error('无法获取账号标识,无法恢复同步密钥');
+  const key = await deriveSyncKey(password, String(me.uid));
+  setSyncKey(key);
+  return key;
+}
 
 /** 导出下载地址(远端模式带基址;本地模式返回 '' 表示不支持)。 */
 export function exportUrl(): string {

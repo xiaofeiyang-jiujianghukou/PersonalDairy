@@ -64,6 +64,27 @@ export function generateSyncKey(): string {
   return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * 由"账号种子(uid)"+ 口令 确定性派生同一把同步密钥(hex)。
+ * 效果:同一账号同一密码登录的所有设备都派生同一把密钥 → 重装后"登录即恢复",
+ * 无需重新扫码配对;密钥只在本机由口令派生,服务端从不持有(隐私不破)。
+ * salt 是账号恒定值(非机密),PBKDF2 150k 派生;
+ * 换密码会得到新密钥(需重新登录收敛),这与"忘记密码=重新开始"一致。
+ */
+export async function deriveSyncKey(password: string, seed: string): Promise<string> {
+  const salt = te.encode(`personal-diary-sync-v1:${seed}`);
+  const base = await crypto.subtle.importKey('raw', te.encode(password), 'PBKDF2', false, ['deriveKey']);
+  const aesKey = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: salt as BufferSource, iterations: 150_000, hash: 'SHA-256' },
+    base,
+    { name: 'AES-GCM', length: 256 },
+    true, // 可导出为原始字节,再转 hex 字符串
+    ['encrypt', 'decrypt'],
+  );
+  const raw = await crypto.subtle.exportKey('raw', aesKey);
+  return [...new Uint8Array(raw)].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+
 // ---------- 口令加密(迁移包/备份文件专用,与同步密钥无关) ----------
 // 用用户口令 + 随机盐走 PBKDF2 派生 AES-256 密钥,再 AES-GCM 加密负载。
 // 这样迁移包即使被他人拿到,没有口令也只是一串密文。

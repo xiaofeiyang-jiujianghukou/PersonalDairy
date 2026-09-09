@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { authApi, setToken } from '../api';
+import { authApi, deriveSyncKeyFromPassword, setToken } from '../api';
 
 export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
   const [mode, setMode] = useState<'login' | 'register' | 'qr' | 'forgot'>('login');
@@ -28,6 +28,12 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
       if (mode === 'login') {
         const r = await authApi.login(username.trim(), password);
         setToken(r.token);
+        try {
+          // 登录即同步:用账号+口令派生同一把同步密钥(重装后再登录也能恢复配对)
+          await deriveSyncKeyFromPassword(password);
+        } catch (e) {
+          console.warn('派生同步密钥失败(可稍后重新登录/重新配对):', (e as Error).message);
+        }
         onAuthed();
       } else {
         // 注册:先发邮箱验证码
@@ -54,6 +60,12 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
     try {
       const r = await authApi.registerConfirm(username.trim(), regCode.trim());
       setToken(r.token);
+      try {
+        // 注册完成即派生同步密钥(与登录同理)
+        await deriveSyncKeyFromPassword(password);
+      } catch (e) {
+        console.warn('派生同步密钥失败:', (e as Error).message);
+      }
       onAuthed();
     } catch (e) {
       setError((e as Error).message);
