@@ -184,8 +184,24 @@ app.get('/api/relay/pull', async (req) => {
 
 // 会话保护:除 健康/鉴权/扫码 外,所有 /api 需 Bearer 登录
 const OPEN_PREFIXES = ['/api/health', '/api/auth', '/api/qr'];
+// 云端模式:禁止这些"内容存储/读取"端点(遵循"服务端不存日记内容")
+const CLOUD_BLOCKED_PREFIXES = [
+  '/api/entries',
+  '/api/search',
+  '/api/images',
+  '/api/uploads',
+  '/api/export',
+  '/api/import',
+  '/api/summary',
+  '/api/sync',
+  '/api/qr',
+];
 app.addHook('onRequest', async (req, reply) => {
   const url = (req.url ?? '').split('?')[0] ?? '';
+  // 云端模式优先拦截内容端点(公网上这些会暴露/写入日记内容)
+  if (config.cloudMode && CLOUD_BLOCKED_PREFIXES.some((p) => url === p || url.startsWith(`${p}/`))) {
+    return reply.code(403).send({ error: '云端模式不存储日记内容,该接口已禁用' });
+  }
   if (OPEN_PREFIXES.some((p) => url === p || url.startsWith(`${p}/`))) return;
   const auth = req.headers.authorization;
   const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';

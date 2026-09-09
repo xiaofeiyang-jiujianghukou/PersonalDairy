@@ -1,6 +1,9 @@
 # Rust 构建产物(桌面应用壳)
-/target
-/gen
+src-tauri/target
+src-tauri/gen
 
 # 打包产物
-src-tauri/target
+target
+
+# 沙箱可写缓存(仅本环境用,用户机用 ~/.cargo)
+.cargo-home

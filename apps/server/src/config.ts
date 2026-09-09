@@ -17,6 +17,8 @@ export interface Config {
   dbPath: string;
   uploadsDir: string;
   imagesDir: string;
+  /** 云端模式:关闭一切"内容存储/读取"端点,只留 身份/加密中继/AI(遵循"不存日记内容") */
+  cloudMode: boolean;
   ai: {
     provider: string;
     baseUrl: string;
@@ -47,6 +49,7 @@ export function loadConfig(): Config {
     dbPath: path.join(dataDir, 'diary.db'),
     uploadsDir: path.join(dataDir, 'uploads'),
     imagesDir: path.join(dataDir, 'images'),
+    cloudMode: process.env.CLOUD_MODE === '1',
     ai: {
       provider: process.env.AI_PROVIDER ?? 'openai-compatible',
       baseUrl: process.env.AI_BASE_URL ?? 'https://api.deepseek.com',
