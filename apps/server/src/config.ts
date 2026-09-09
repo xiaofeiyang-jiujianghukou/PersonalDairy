@@ -19,6 +19,8 @@ export interface Config {
   imagesDir: string;
   /** 云端模式:关闭一切"内容存储/读取"端点,只留 身份/加密中继/AI(遵循"不存日记内容") */
   cloudMode: boolean;
+  /** Redis 连接串(中继消息中间件)。默认 redis://127.0.0.1:6379。 */
+  redisUrl: string;
   ai: {
     provider: string;
     baseUrl: string;
@@ -50,6 +52,7 @@ export function loadConfig(): Config {
     uploadsDir: path.join(dataDir, 'uploads'),
     imagesDir: path.join(dataDir, 'images'),
     cloudMode: process.env.CLOUD_MODE === '1',
+    redisUrl: process.env.REDIS_URL?.trim() || 'redis://127.0.0.1:6379',
     ai: {
       provider: process.env.AI_PROVIDER ?? 'openai-compatible',
       baseUrl: process.env.AI_BASE_URL ?? 'https://api.deepseek.com',
