@@ -37,6 +37,18 @@ function cfg(): MailCfg | null {
 
 const b64 = (s: string): string => Buffer.from(s).toString('base64');
 
+/** 解析 SMTP_FROM:支持 "显示名 <addr>" 或纯地址,分开信封地址与 From: 头。 */
+export function parseFrom(raw: string): { addr: string; header: string } {
+  const m = /^(.*)<([^>]+)>$/.exec(String(raw ?? '').trim());
+  if (m) {
+    const name = m[1]!.trim();
+    const addr = m[2]!.trim();
+    return { addr, header: name ? `${name} <${addr}>` : addr };
+  }
+  const addr = String(raw ?? '').trim();
+  return { addr, header: addr };
+}
+
 export async function sendCodeEmail(to: string, code: string, username: string, purpose: MailPurpose): Promise<MailResult> {
   const c = cfg();
   if (!c) {
@@ -44,7 +56,8 @@ export async function sendCodeEmail(to: string, code: string, username: string, 
     return { ok: true, note: 'console' };
   }
   try {
-    await smtpSend(c, to, buildMessage(c.from, to, username, code, purpose));
+    const parsed = parseFrom(c.from);
+    await smtpSend(c, to, buildMessage(parsed.header, to, username, code, purpose), parsed.addr);
     return { ok: true, note: 'smtp' };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -74,7 +87,7 @@ function buildMessage(from: string, to: string, username: string, code: string, 
   ].join('\r\n');
 }
 
-async function smtpSend(c: MailCfg, to: string, message: string): Promise<void> {
+async function smtpSend(c: MailCfg, to: string, message: string, fromAddr: string): Promise<void> {
   let sock: net.Socket = c.secure
     ? tls.connect({ host: c.host, port: c.port, servername: c.host })
     : net.connect({ host: c.host, port: c.port });
@@ -144,7 +157,7 @@ async function smtpSend(c: MailCfg, to: string, message: string): Promise<void> 
     await expect(334);
     sock.write(b64(c.pass) + '\r\n');
     await expect(235);
-    sock.write(`MAIL FROM:<${c.from}>\r\n`);
+    sock.write(`MAIL FROM:<${fromAddr}>\r\n`);
     await expect(250);
     sock.write(`RCPT TO:<${to}>\r\n`);
     await expect(250);
