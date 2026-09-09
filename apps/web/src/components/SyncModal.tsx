@@ -6,6 +6,7 @@ import { autoSync } from '../lib/syncAuto';
 import {
   authApi,
   isPhoneMode,
+  isPhoneApp,
   getSyncPartner,
   setSyncPartner,
   getSyncKey,
@@ -17,6 +18,7 @@ import {
 
 export default function SyncModal({ onClose }: { onClose: () => void }) {
   const phoneMode = isPhoneMode();
+  const isPhone = isPhoneApp(); // 手机 App(极简:只扫码);桌面壳保留完整同步管理
   const [partner, setPartner] = useState(getSyncPartner());
   const [hostQr, setHostQr] = useState<string | null>(null); // 本机展示的配对码(本地优先)
   const [remoteQr, setRemoteQr] = useState<string | null>(null); // 服务器生成的配对码(远程桌面)
@@ -192,57 +194,87 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal-title">配对与同步</h2>
+        <h2 className="modal-title">{isPhone ? '扫码同步' : '配对与同步'}</h2>
 
-        <p className="modal-hint">
-          数据只存在各设备本地。用「显示配对码 / 扫描二维码」在两台设备间建立同一同步密钥;
-          之后经云端**加密中继**同步(内容端到端加密,服务器看不到明文)。
-        </p>
-
-        <video
-          ref={videoRef}
-          className="qr-video"
-          playsInline
-          muted
-          style={{ display: scanning ? 'block' : 'none' }}
-        />
-
-        <div className="modal-actions">
-          <button className="ghost" onClick={showPairQr} disabled={scanning}>
-            显示配对码
-          </button>
-          <button className="ghost" onClick={stopCamera} disabled={!scanning}>
-            停止
-          </button>
-          <button className="primary" onClick={startScan} disabled={scanning}>
-            {scanning ? '扫描中…' : '扫描二维码'}
-          </button>
-          <button className="primary" onClick={doSync} disabled={busy}>
-            {busy ? '同步中…' : '立即同步'}
-          </button>
-          <button className="ghost" onClick={doRelaySync} disabled={busy}>
-            {busy ? '同步中…' : '经中继同步'}
-          </button>
-          <button className="ghost" onClick={doFullRelaySync} disabled={busy} title="清空本机同步水位,把全部日记重新推送(找回丢失的设备数据)">
-            {busy ? '同步中…' : '强制全量同步'}
-          </button>
-        </div>
-
-        {hostQr && (
+        {isPhone ? (
           <>
-            <p className="modal-hint">另一台设备点「扫描二维码」扫这个码:</p>
-            <img className="qr-img" src={hostQr} alt="配对二维码" />
+            <p className="modal-hint">
+              扫电脑「我的日记」上的配对码,即可自动同步。数据端到端加密,只在设备间传递。
+            </p>
+            {getSyncKey() ? (
+              <p className="modal-hint">已配对 ✓ 打开/登录会自动同步。</p>
+            ) : (
+              <p className="modal-hint warn">尚未配对,扫一下电脑上的码。</p>
+            )}
+            <video
+              ref={videoRef}
+              className="qr-video"
+              playsInline
+              muted
+              style={{ display: scanning ? 'block' : 'none' }}
+            />
+            <div className="modal-actions">
+              <button className="primary" onClick={startScan} disabled={scanning}>
+                {scanning ? '扫描中…' : '扫码同步'}
+              </button>
+              {scanning && <button className="ghost" onClick={stopCamera}>停止</button>}
+            </div>
+            {msg && <p className="ok">{msg}</p>}
+            {err && <p className="err">{err}</p>}
+          </>
+        ) : (
+          <>
+            <p className="modal-hint">
+              数据只存在各设备本地。用「显示配对码 / 扫描二维码」在两台设备间建立同一同步密钥;
+              之后经云端**加密中继**同步(内容端到端加密,服务器看不到明文)。
+            </p>
+
+            <video
+              ref={videoRef}
+              className="qr-video"
+              playsInline
+              muted
+              style={{ display: scanning ? 'block' : 'none' }}
+            />
+
+            <div className="modal-actions">
+              <button className="ghost" onClick={showPairQr} disabled={scanning}>
+                显示配对码
+              </button>
+              <button className="ghost" onClick={stopCamera} disabled={!scanning}>
+                停止
+              </button>
+              <button className="primary" onClick={startScan} disabled={scanning}>
+                {scanning ? '扫描中…' : '扫描二维码'}
+              </button>
+              <button className="primary" onClick={doSync} disabled={busy}>
+                {busy ? '同步中…' : '立即同步'}
+              </button>
+              <button className="ghost" onClick={doRelaySync} disabled={busy}>
+                {busy ? '同步中…' : '经中继同步'}
+              </button>
+              <button className="ghost" onClick={doFullRelaySync} disabled={busy} title="清空本机同步水位,把全部日记重新推送(找回丢失的设备数据)">
+                {busy ? '同步中…' : '强制全量同步'}
+              </button>
+            </div>
+
+            {hostQr && (
+              <>
+                <p className="modal-hint">另一台设备点「扫描二维码」扫这个码:</p>
+                <img className="qr-img" src={hostQr} alt="配对二维码" />
+              </>
+            )}
+            {remoteQr && !phoneMode && (
+              <>
+                <p className="modal-hint">用手机 App 扫下方二维码即可配对同步:</p>
+                <img className="qr-img" src={remoteQr} alt="配对二维码" />
+              </>
+            )}
+
+            {msg && <p className="ok">{msg}</p>}
+            {err && <p className="err">{err}</p>}
           </>
         )}
-        {remoteQr && !phoneMode && (
-          <>
-            <p className="modal-hint">用手机 App 扫下方二维码即可配对同步:</p>
-            <img className="qr-img" src={remoteQr} alt="配对二维码" />
-          </>
-        )}
-
-        {msg && <p className="ok">{msg}</p>}
-        {err && <p className="err">{err}</p>}
 
         <div className="modal-actions">
           <button className="ghost" onClick={onClose}>关闭</button>

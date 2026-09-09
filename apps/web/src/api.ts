@@ -105,6 +105,12 @@ export function isPhoneMode(): boolean {
   return isPhoneLocal();
 }
 
+/** 是否运行在手机 App(Capacitor)里(区别于桌面壳 Tauri)。 */
+export function isPhoneApp(): boolean {
+  const c = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
+  return Boolean(c?.isNativePlatform?.());
+}
+
 function resolve(url: string): string {
   const base = getApiBase();
   return base ? `${base}${url}` : url;
