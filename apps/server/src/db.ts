@@ -379,6 +379,16 @@ export function verifyPassword(pw: string, stored: string): boolean {
   return computed.length === expected.length && timingSafeEqual(computed, expected);
 }
 
+/** 修改用户密码(校验后由调用方保证身份;成功返回 true)。 */
+export function changePassword(userId: number, newPassword: string): boolean {
+  const hash = hashPassword(newPassword);
+  const ts = nowIso();
+  const res = getDb()
+    .prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
+    .run(hash, ts, userId);
+  return res.changes > 0;
+}
+
 export function createUser(username: string, password: string): AuthUser | null {
   const ts = nowIso();
   const hash = hashPassword(password);

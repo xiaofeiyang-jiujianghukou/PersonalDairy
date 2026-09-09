@@ -34,6 +34,7 @@ import {
   createUser,
   findUserByUsername,
   verifyPassword,
+  changePassword,
   createSession,
   getUserByToken,
   deleteSession,
@@ -120,6 +121,19 @@ app.post('/api/auth/logout', { preHandler: requireAuth }, async (req) => {
   const token = typeof r.headers.authorization === 'string' ? r.headers.authorization.slice(7).trim() : '';
   if (token) deleteSession(token);
   return { ok: true };
+});
+
+app.post('/api/auth/change-password', { preHandler: requireAuth }, async (req, reply) => {
+  const u = (req as AuthedRequest).user!;
+  const body = (req.body ?? {}) as { oldPassword?: string; newPassword?: string };
+  const oldPw = typeof body.oldPassword === 'string' ? body.oldPassword : '';
+  const newPw = typeof body.newPassword === 'string' ? body.newPassword : '';
+  if (!newPw || newPw.length < 6) return reply.code(400).send({ error: '新密码至少 6 位' });
+  const user = findUserByUsername(u.username);
+  if (!user || !verifyPassword(oldPw, user.passwordHash)) {
+    return reply.code(400).send({ error: '当前密码错误' });
+  }
+  return changePassword(u.id, newPw) ? { ok: true } : reply.code(500).send({ error: '修改失败' });
 });
 
 // ---------- 微信式扫码登录(电脑 QR → 手机确认 → 新设备拿 token) ----------

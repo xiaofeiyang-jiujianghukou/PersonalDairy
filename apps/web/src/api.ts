@@ -299,6 +299,11 @@ export const authApi = {
     }),
   me: () => http<{ username: string }>('/api/auth/me'),
   logout: () => http<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+  changePassword: (oldPassword: string, newPassword: string) =>
+    http<{ ok: boolean }>('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ oldPassword, newPassword }),
+    }),
   // 微信式扫码登录
   loginQr: () => http<{ qrId: string; dataUrl: string }>('/api/auth/login-qr', { method: 'POST' }),
   loginQrPoll: (qrId: string) =>

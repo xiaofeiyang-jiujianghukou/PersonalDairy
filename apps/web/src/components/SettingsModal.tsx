@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { getApiBase, setApiBase, isPhoneMode } from '../api';
+import { getApiBase, setApiBase, isPhoneMode, authApi } from '../api';
 import type { BundleEnvelope } from '@diary/shared/bundle';
 import { exportCurrentToBundle, importBundleFile } from '../lib/backup';
 
@@ -23,6 +23,42 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [msgOk, setMsgOk] = useState(false);
+
+  const [oldPw, setOldPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwMsg, setPwMsg] = useState('');
+  const [pwOk, setPwOk] = useState(false);
+
+  async function doChangePassword() {
+    if (pwBusy) return;
+    setPwMsg('');
+    if (newPw.length < 6) {
+      setPwOk(false);
+      setPwMsg('新密码至少 6 位');
+      return;
+    }
+    if (newPw !== confirmPw) {
+      setPwOk(false);
+      setPwMsg('两次输入的新密码不一致');
+      return;
+    }
+    setPwBusy(true);
+    try {
+      await authApi.changePassword(oldPw, newPw);
+      setPwOk(true);
+      setPwMsg('密码已修改 ✅(下次用新密码登录)');
+      setOldPw('');
+      setNewPw('');
+      setConfirmPw('');
+    } catch (e) {
+      setPwOk(false);
+      setPwMsg((e as Error).message || '修改失败');
+    } finally {
+      setPwBusy(false);
+    }
+  }
 
   function save() {
     setApiBase(value);
@@ -115,6 +151,38 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
         {isPhoneMode() && (
           <p className="modal-hint">手机端数据保存在本机,迁移包即整机备份,不对外上传。</p>
         )}
+
+        <h3 className="settings-section">修改密码</h3>
+        <p className="modal-hint">输入当前密码 + 新密码(至少 6 位),提交后立即生效。</p>
+        <input
+          className="settings-input"
+          value={oldPw}
+          onChange={(e) => setOldPw(e.target.value)}
+          placeholder="当前密码"
+          type="password"
+        />
+        <input
+          className="settings-input"
+          value={newPw}
+          onChange={(e) => setNewPw(e.target.value)}
+          placeholder="新密码(至少 6 位)"
+          type="password"
+          style={{ marginTop: 8 }}
+        />
+        <input
+          className="settings-input"
+          value={confirmPw}
+          onChange={(e) => setConfirmPw(e.target.value)}
+          placeholder="再次输入新密码"
+          type="password"
+          style={{ marginTop: 8 }}
+        />
+        <div className="modal-actions">
+          <button className="primary" onClick={doChangePassword} disabled={pwBusy}>
+            {pwBusy ? '提交中…' : '修改密码'}
+          </button>
+        </div>
+        {pwMsg && <p className={pwOk ? 'backup-msg ok' : 'backup-msg'}>{pwMsg}</p>}
       </div>
     </div>
   );
