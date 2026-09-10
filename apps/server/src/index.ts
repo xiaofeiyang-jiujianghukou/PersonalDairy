@@ -72,6 +72,19 @@ initRelayRedis(config.redisUrl);
 
 const app = Fastify({ logger: true, bodyLimit: 64 * 1024 * 1024 }); // 64MB,容纳含图片的同步负载
 
+// 容错:空的 application/json body 视为 {}。
+// 否则 Fastify 会对"无 body 但带 JSON Content-Type"的请求返回 400
+// (FST_ERR_CTP_EMPTY_JSON_BODY)——生成登录码/退出登录等无 body 的 POST 都会踩。
+app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
+  const s = String(body ?? '').trim();
+  if (!s) return done(null, {});
+  try {
+    done(null, JSON.parse(s));
+  } catch (e) {
+    done(e as Error, undefined);
+  }
+});
+
 // 允许本机 / 局域网前端访问(本地优先应用,不做鉴权,数据只在你自己的机器上)。
 await app.register(cors, { origin: true });
 

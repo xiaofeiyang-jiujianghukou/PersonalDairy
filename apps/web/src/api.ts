@@ -165,25 +165,31 @@ function authHeaders(): Record<string, string> {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
+/**
+ * 组装请求头:只有"确实带了 body"时才设 Content-Type: application/json。
+ * 否则空 body + JSON Content-Type 会被 Fastify 以 400 FST_ERR_CTP_EMPTY_JSON_BODY 拒绝
+ * (生成登录码、退出登录、解绑邮箱等无 body 的 POST 都踩过这个坑)。
+ */
+function reqHeaders(init?: RequestInit): Record<string, string> {
+  const headers: Record<string, string> = { ...authHeaders() };
+  const body = init?.body;
+  if (body !== undefined && body !== null) headers['Content-Type'] = 'application/json';
+  return { ...headers, ...((init?.headers as Record<string, string> | undefined) ?? {}) };
+}
+
 async function http<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await (await getFetch())(resolve(url), {
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    ...init,
-  });
+  const res = await (await getFetch())(resolve(url), { ...init, headers: reqHeaders(init) });
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `请求失败 (${res.status})`);
+    const body = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
+    throw new Error(body?.message ?? body?.error ?? `请求失败 (${res.status})`);
   }
   return res.json() as Promise<T>;
 }
 async function httpFrom<T>(base: string, url: string, init?: RequestInit): Promise<T> {
-  const res = await (await getFetch())(`${base || ''}${url}`, {
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    ...init,
-  });
+  const res = await (await getFetch())(`${base || ''}${url}`, { ...init, headers: reqHeaders(init) });
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `请求失败 (${res.status})`);
+    const body = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
+    throw new Error(body?.message ?? body?.error ?? `请求失败 (${res.status})`);
   }
   return res.json() as Promise<T>;
 }
