@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react';
-import { authApi, deriveSyncKeyFromPassword, setToken } from '../api';
+import { decryptObject } from '@diary/shared/syncCrypto';
+import { authApi, deriveSyncKeyFromPassword, isPhoneApp, setSyncKey, setToken } from '../api';
 
 export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
-  const [mode, setMode] = useState<'login' | 'register' | 'qr' | 'forgot'>('login');
+  // 桌面端(非手机 App):默认"亮码登录"——桌面显示二维码,手机扫一下即登录(微信式)。
+  // 手机 App:默认账号密码登录。
+  const isPhone = isPhoneApp();
+  const [mode, setMode] = useState<'login' | 'register' | 'qr' | 'forgot'>(isPhone ? 'login' : 'qr');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [email, setEmail] = useState('');
@@ -131,6 +135,12 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
     }
   }
 
+  // 亮码登录:进入扫码模式即自动生成登录码(桌面端默认进这个模式)
+  useEffect(() => {
+    if (mode === 'qr' && !qr) void startQr();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, qr]);
+
   useEffect(() => {
     if (!qr) return;
     const timer = setInterval(async () => {
@@ -138,6 +148,15 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
         const p = await authApi.loginQrPoll(qr.qrId);
         if (p.status === 'confirmed' && p.token) {
           setToken(p.token);
+          // 手机扫码时把"同步密钥"用一次性 qrId 加密带过来了 → 解密写入,立即具备同步能力
+          if (p.encSyncKey) {
+            try {
+              const k = await decryptObject<string>(qr.qrId, JSON.parse(p.encSyncKey));
+              if (typeof k === 'string' && k) setSyncKey(k);
+            } catch (e) {
+              console.warn('同步密钥解密失败(可改用"账号密码登录"):', (e as Error).message);
+            }
+          }
           clearInterval(timer);
           onAuthed();
         }
@@ -153,7 +172,7 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
       <div className="auth-gate">
         <div className="auth-card">
           <h1 className="auth-title">扫码登录</h1>
-          <p className="auth-sub">用手机「我的日记」扫一扫二维码,即可登录</p>
+          <p className="auth-sub">打开手机「我的日记」→ 右上角 📷 扫一扫,即可登录</p>
           {qr ? (
             <img className="qr-img" src={qr.dataUrl} alt="登录码" />
           ) : (
@@ -161,8 +180,8 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
           )}
           {error && <p className="err">{error}</p>}
           <div className="auth-actions">
-            <button className="ghost" onClick={() => setMode('login')}>返回</button>
-            {!qr && <button className="primary" onClick={startQr}>生成登录码</button>}
+            <button className="ghost" onClick={() => setMode('login')}>账号密码登录</button>
+            {!qr && <button className="primary" onClick={startQr}>重新生成登录码</button>}
           </div>
         </div>
       </div>

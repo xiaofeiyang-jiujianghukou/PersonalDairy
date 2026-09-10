@@ -355,11 +355,14 @@ export const authApi = {
   // 微信式扫码登录
   loginQr: () => http<{ qrId: string; dataUrl: string }>('/api/auth/login-qr', { method: 'POST' }),
   loginQrPoll: (qrId: string) =>
-    http<{ status: 'pending' | 'confirmed'; token?: string; username?: string }>(
+    http<{ status: 'pending' | 'confirmed'; token?: string; username?: string; encSyncKey?: string }>(
       `/api/auth/login-qr/${qrId}`,
     ),
-  scanConfirm: (qrId: string) =>
-    http<{ ok: boolean }>('/api/auth/scan-confirm', { method: 'POST', body: JSON.stringify({ qrId }) }),
+  scanConfirm: (qrId: string, encSyncKey?: string) =>
+    http<{ ok: boolean }>('/api/auth/scan-confirm', {
+      method: 'POST',
+      body: JSON.stringify(encSyncKey ? { qrId, encSyncKey } : { qrId }),
+    }),
 };
 
 /**

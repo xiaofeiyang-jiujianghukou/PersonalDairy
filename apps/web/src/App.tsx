@@ -6,7 +6,7 @@ import SearchView from './views/SearchView';
 import MyView from './views/MyView';
 import AuthGate from './components/AuthGate';
 import SyncModal from './components/SyncModal';
-import { getToken } from './api';
+import { getToken, isPhoneApp } from './api';
 import { autoSync, startRelayLoop, stopRelayLoop } from './lib/syncAuto';
 
 type View =
@@ -50,9 +50,12 @@ export default function App() {
           <button className={view.kind === 'mine' ? 'active' : ''} onClick={() => setView({ kind: 'mine' })}>
             我的
           </button>
-          <button className="scan-btn" onClick={() => setShowScan(true)} title="扫码同步(对准另一台设备的码)">
-            <span className="scan-icon" aria-hidden>📷</span>
-          </button>
+          {/* 扫一扫只在手机 App 上:桌面端不"扫码"(它的码是给手机扫的,登录页会亮码) */}
+          {isPhoneApp() && (
+            <button className="scan-btn" onClick={() => setShowScan(true)} title="扫一扫">
+              <span className="scan-icon" aria-hidden>📷</span>
+            </button>
+          )}
         </nav>
       </header>
 

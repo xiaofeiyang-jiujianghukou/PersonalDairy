@@ -284,6 +284,8 @@ interface PendingLogin {
   token: string;
   username: string;
   createdAt: number;
+  /** 手机确认时随扫码带过来的"同步密钥密文"(用一次性 qrId 派生密钥加密;服务端只透传,解不开) */
+  encSyncKey?: string;
 }
 const pendingLogins = new Map<string, PendingLogin>();
 
@@ -303,12 +305,13 @@ app.get('/api/auth/login-qr/:qrId', async (req, reply) => {
   if (!p.confirmed) return { status: 'pending' };
   // 一次性:taken 后删除
   pendingLogins.delete(qrId);
-  return { status: 'confirmed', token: p.token, username: p.username };
+  return { status: 'confirmed', token: p.token, username: p.username, encSyncKey: p.encSyncKey ?? '' };
 });
 
 // 3) 手机(已登录)确认这台设备
 app.post('/api/auth/scan-confirm', { preHandler: requireAuth }, async (req, reply) => {
   const qrId = (req.body as { qrId?: string } | null)?.qrId;
+  const encSyncKey = (req.body as { encSyncKey?: string } | null)?.encSyncKey;
   const user = (req as AuthedRequest).user!;
   if (typeof qrId !== 'string') return reply.code(400).send({ error: '缺少登录码' });
   const p = pendingLogins.get(qrId);
@@ -317,6 +320,8 @@ app.post('/api/auth/scan-confirm', { preHandler: requireAuth }, async (req, repl
   p.confirmed = true;
   p.token = token;
   p.username = user.username;
+  // 手机把"同步密钥"用一次性 qrId 加密后带过来 → 电脑端解密即可立即同步(服务端只见密文)
+  if (typeof encSyncKey === 'string' && encSyncKey) p.encSyncKey = encSyncKey;
   return { ok: true };
 });
 
