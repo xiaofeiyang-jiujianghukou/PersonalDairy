@@ -246,6 +246,63 @@ button.ghost:disabled {
   border-top: 1px solid var(--line);
 }
 
+/* ---------- 微信式媒体选择(底部弹层:拍摄 / 从相册选择) ---------- */
+.media-sheet-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.media-sheet {
+  width: 100%;
+  max-width: 520px;
+  background: #fff;
+  border-radius: 14px 14px 0 0;
+  padding: 8px 8px calc(10px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.12);
+}
+
+.media-sheet-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 14px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  color: #1a1a1a;
+}
+
+.media-sheet-item:active {
+  background: #f2ede4;
+}
+
+.media-sheet-item.cancel {
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  color: #8a8578;
+  font-size: 15px;
+}
+
+.media-sheet-main {
+  font-size: 16px;
+}
+
+.media-sheet-sub {
+  font-size: 12px;
+  color: #9a9488;
+}
+
 .composer-bar {
   display: flex;
   align-items: center;

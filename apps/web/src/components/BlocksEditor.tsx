@@ -22,10 +22,9 @@ export default function BlocksEditor({
 }) {
   const [uploading, setUploading] = useState(false);
   const [pendingFocus, setPendingFocus] = useState<string | null>(null);
-  const imgUploadRef = useRef<HTMLInputElement>(null); // 相册选图
-  const imgCaptureRef = useRef<HTMLInputElement>(null); // 拍照
-  const vidUploadRef = useRef<HTMLInputElement>(null); // 视频文件
-  const vidCaptureRef = useRef<HTMLInputElement>(null); // 录像
+  const [mediaMenu, setMediaMenu] = useState(false); // 微信式:一个入口 → 拍摄 / 从相册选择
+  const captureRef = useRef<HTMLInputElement>(null); // 拍摄(照片或视频,交给系统相机)
+  const pickRef = useRef<HTMLInputElement>(null); // 从相册选择(照片或视频)
   const taRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
   useEffect(() => {
@@ -156,25 +155,57 @@ export default function BlocksEditor({
         ),
       )}
 
-      <input ref={imgUploadRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={onPick} />
-      <input ref={imgCaptureRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={onPick} />
-      <input ref={vidUploadRef} type="file" accept="video/*" style={{ display: 'none' }} onChange={onPick} />
-      <input ref={vidCaptureRef} type="file" accept="video/*" capture="environment" style={{ display: 'none' }} onChange={onPick} />
+      <input
+        ref={captureRef}
+        type="file"
+        accept="image/*,video/*"
+        capture="environment"
+        style={{ display: 'none' }}
+        onChange={onPick}
+      />
+      <input
+        ref={pickRef}
+        type="file"
+        accept="image/*,video/*"
+        style={{ display: 'none' }}
+        onChange={onPick}
+      />
 
       <div className="blocks-toolbar">
-        <button className="ghost" onClick={() => imgCaptureRef.current?.click()} disabled={uploading}>
-          {uploading ? '处理中…' : '拍照'}
-        </button>
-        <button className="ghost" onClick={() => imgUploadRef.current?.click()} disabled={uploading}>
-          相册
-        </button>
-        <button className="ghost" onClick={() => vidCaptureRef.current?.click()} disabled={uploading}>
-          录像
-        </button>
-        <button className="ghost" onClick={() => vidUploadRef.current?.click()} disabled={uploading}>
-          视频
+        <button className="ghost" onClick={() => setMediaMenu(true)} disabled={uploading}>
+          {uploading ? '处理中…' : '＋ 图片 / 视频'}
         </button>
       </div>
+
+      {/* 微信式:不列一堆按钮,只给"拍摄 / 从手机相册选择"两个选择 */}
+      {mediaMenu && (
+        <div className="media-sheet-mask" onClick={() => setMediaMenu(false)}>
+          <div className="media-sheet" onClick={(e) => e.stopPropagation()}>
+            <button
+              className="media-sheet-item"
+              onClick={() => {
+                setMediaMenu(false);
+                captureRef.current?.click();
+              }}
+            >
+              <span className="media-sheet-main">拍摄</span>
+              <span className="media-sheet-sub">照片或视频</span>
+            </button>
+            <button
+              className="media-sheet-item"
+              onClick={() => {
+                setMediaMenu(false);
+                pickRef.current?.click();
+              }}
+            >
+              <span className="media-sheet-main">从手机相册选择</span>
+            </button>
+            <button className="media-sheet-item cancel" onClick={() => setMediaMenu(false)}>
+              取消
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
