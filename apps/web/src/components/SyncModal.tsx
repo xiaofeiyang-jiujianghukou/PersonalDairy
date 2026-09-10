@@ -12,6 +12,7 @@ import {
   getSyncKey,
   setSyncKey,
   setLastSyncAt,
+  setRelayCursor,
   syncNow,
   relaySyncNow,
 } from '../api';
@@ -177,13 +178,15 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
     }
   }
 
-  // 强制全量:重置本地同步水位,让本机把"全部"日记重新推给中继(恢复丢数据的设备)
+  // 强制全量:重置"推送水位"和"拉取游标",让本机把全部日记重推给中继、并从头全量拉取
+  // (修复:只清水位会导致清了推、却仍从旧游标往后拉 → 永远错过前面漏掉的消息)
   async function doFullRelaySync() {
     setErr(null);
     setMsg(null);
     setBusy(true);
     try {
-      setLastSyncAt(''); // 清空水位 → 下次同步推送全部
+      setLastSyncAt(''); // 清空水位 → 推送全部
+      setRelayCursor(0); // 归零游标 → 从头全量拉取(补回之前漏掉的对端消息)
       const r = await relaySyncNow();
       setMsg(`强制全量同步完成:拉取并合并 ${r.pulled} 条。`);
     } catch (e) {
