@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { Entry } from '../types';
 import { api } from '../api';
 import { friendlyDate, shiftDate } from '../dates';
+import { useDataRefresh } from '../lib/useDataRefresh';
 import Composer from '../components/Composer';
 import EntryItem from '../components/EntryItem';
 
@@ -45,6 +46,8 @@ export default function DayView({
       alert((e as Error).message);
     }
   }
+
+  useDataRefresh(reload); // 同步合并了新条目 → 自动刷新
 
   return (
     <div className="view">

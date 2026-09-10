@@ -188,7 +188,7 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
       setLastSyncAt(''); // 清空水位 → 推送全部
       setRelayCursor(0); // 归零游标 → 从头全量拉取(补回之前漏掉的对端消息)
       const r = await relaySyncNow();
-      setMsg(`强制全量同步完成:拉取并合并 ${r.pulled} 条。`);
+      setMsg(`同步完成:推送 ${r.pushed} 条,拉取合并 ${r.pulled} 条。`);
     } catch (e) {
       setErr((e as Error).message);
     } finally {

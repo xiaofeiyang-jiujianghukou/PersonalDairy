@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { SearchResult } from '../types';
 import { api } from '../api';
+import { useDataRefresh } from '../lib/useDataRefresh';
 
 export default function SearchView({ onOpenDay }: { onOpenDay: (date: string) => void }) {
   const [q, setQ] = useState('');
@@ -8,7 +9,7 @@ export default function SearchView({ onOpenDay }: { onOpenDay: (date: string) =>
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  async function run() {
+  const run = useCallback(async () => {
     if (!q.trim()) return;
     setLoading(true);
     setSearched(true);
@@ -19,7 +20,12 @@ export default function SearchView({ onOpenDay }: { onOpenDay: (date: string) =>
     } finally {
       setLoading(false);
     }
-  }
+  }, [q]);
+
+  useDataRefresh(() => {
+    // 只在该视图已经搜过时刷新结果,不改变用户的输入
+    if (searched) void run();
+  });
 
   return (
     <div className="view">

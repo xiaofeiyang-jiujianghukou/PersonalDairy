@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Entry } from '../types';
 import { api } from '../api';
 import { todayStr } from '../dates';
+import { useDataRefresh } from '../lib/useDataRefresh';
 import Composer from '../components/Composer';
 import EntryItem from '../components/EntryItem';
 
@@ -24,6 +25,8 @@ export default function TodayView({ onOpenDay }: { onOpenDay: (date: string) => 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useDataRefresh(load); // 同步合并了新条目 → 自动刷新
 
   return (
     <div className="view">

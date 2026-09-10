@@ -9,6 +9,7 @@ import type {
 import { reconcileFull } from '@diary/shared/sync';
 import { extractMediaIds } from '@diary/shared/images';
 import { decryptObject, deriveSyncKey, encryptObject } from '@diary/shared/syncCrypto';
+import { emitDataChanged } from './lib/dataEvents';
 import { IdbBackend, createLocalApi, listImageIds, type LocalBackend } from './lib/localStore';
 import { exportMediaFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
 import { getFetch } from './lib/net';
@@ -470,7 +471,7 @@ function getDeviceId(): string {
  * 继电器同步(P2,跨网络):把加密增量推到中继,并取走对端推送的,解密后 LWW 合并。
  * 不依赖 P2P 可达性;只要客户端能访问服务端(/api/relay)即可。
  */
-export async function relaySyncNow(): Promise<{ pulled: number }> {
+export async function relaySyncNow(): Promise<{ pushed: number; pulled: number }> {
   const syncKey = getSyncKey();
   if (!syncKey) throw new Error('尚未配对(无同步密钥)');
   const since = getLastSyncAt();
@@ -510,6 +511,7 @@ export async function relaySyncNow(): Promise<{ pulled: number }> {
   }
   if (curEntries.length) chunks.push({ entries: curEntries, images: [...curImages.values()] });
 
+  let pushed = 0;
   for (const chunk of chunks) {
     const payload = { since, entries: chunk.entries, images: chunk.images, localImageIds };
     const enc = await encryptObject(syncKey, payload);
@@ -517,9 +519,11 @@ export async function relaySyncNow(): Promise<{ pulled: number }> {
       method: 'POST',
       body: JSON.stringify({ from: deviceId, payload: JSON.stringify(enc) }),
     });
+    pushed += chunk.entries.length;
   }
 
-  return relayPullOnly();
+  const { pulled } = await relayPullOnly();
+  return { pushed, pulled };
 }
 
 /**
@@ -574,6 +578,7 @@ export async function relayPullOnly(): Promise<{ pulled: number }> {
     if (msgs.length < pageSize) break; // 不足一页 = 已拉完
   }
   setLastSyncAt(new Date().toISOString());
+  if (pulled > 0) emitDataChanged(); // 合并了对端条目 → 通知界面刷新
   return { pulled };
 }
 

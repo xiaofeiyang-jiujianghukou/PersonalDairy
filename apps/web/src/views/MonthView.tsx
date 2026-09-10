@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { format, isSameDay, isSameMonth } from 'date-fns';
 import type { Entry } from '../types';
 import { api } from '../api';
 import { monthGrid, weekdayLabels } from '../dates';
+import { useDataRefresh } from '../lib/useDataRefresh';
 import SummaryCard from '../components/SummaryCard';
 
 export default function MonthView({ onOpenDay }: { onOpenDay: (date: string) => void }) {
@@ -15,15 +16,19 @@ export default function MonthView({ onOpenDay }: { onOpenDay: (date: string) => 
 
   const month = `${cursor.year}-${String(cursor.month).padStart(2, '0')}`;
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        setEntries(await api.listByMonth(month));
-      } catch (e) {
-        alert((e as Error).message);
-      }
-    })();
+  const load = useCallback(async () => {
+    try {
+      setEntries(await api.listByMonth(month));
+    } catch (e) {
+      alert((e as Error).message);
+    }
   }, [month]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useDataRefresh(load); // 同步合并了新条目 → 自动刷新
 
   const days = useMemo(() => monthGrid(cursor.year, cursor.month), [cursor.year, cursor.month]);
   const countsByDay = useMemo(() => {
