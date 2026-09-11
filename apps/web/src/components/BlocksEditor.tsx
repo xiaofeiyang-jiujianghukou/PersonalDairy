@@ -27,6 +27,7 @@ export default function BlocksEditor({
   const photoRef = useRef<HTMLInputElement>(null); // 拍摄照片 -> ACTION_IMAGE_CAPTURE
   const videoRef = useRef<HTMLInputElement>(null); // 拍摄视频 -> ACTION_VIDEO_CAPTURE
   const pickRef = useRef<HTMLInputElement>(null); // 从相册选择(照片或视频)
+  const pressStart = useRef(0); // 「拍摄」按下的时刻(用于区分轻点/长按)
   const taRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
   useEffect(() => {
@@ -187,29 +188,30 @@ export default function BlocksEditor({
         </button>
       </div>
 
-      {/* 微信式:一个入口,少数几个清晰的选择(拍摄必须区分拍照/录像,否则系统会退回文件选择器) */}
+      {/* 微信式:一个「拍摄」——轻点拍照、长按录像;外加从相册选择。
+          判定放在 pointerup(仍属用户激活),否则调起文件选择器会被浏览器拦截。 */}
       {mediaMenu && (
         <div className="media-sheet-mask" onClick={() => setMediaMenu(false)}>
           <div className="media-sheet" onClick={(e) => e.stopPropagation()}>
             <button
               className="media-sheet-item"
-              onClick={() => {
-                setMediaMenu(false);
-                photoRef.current?.click();
+              onPointerDown={() => {
+                pressStart.current = Date.now();
               }}
-            >
-              <span className="media-sheet-main">拍摄照片</span>
-              <span className="media-sheet-sub">打开相机</span>
-            </button>
-            <button
-              className="media-sheet-item"
-              onClick={() => {
+              onPointerUp={() => {
+                const held = Date.now() - pressStart.current;
+                pressStart.current = 0;
                 setMediaMenu(false);
-                videoRef.current?.click();
+                if (held >= 400) videoRef.current?.click(); // 长按 → 录像
+                else photoRef.current?.click(); // 轻点 → 拍照
               }}
+              onPointerCancel={() => {
+                pressStart.current = 0;
+              }}
+              onContextMenu={(e) => e.preventDefault()}
             >
-              <span className="media-sheet-main">拍摄视频</span>
-              <span className="media-sheet-sub">打开录像</span>
+              <span className="media-sheet-main">拍摄</span>
+              <span className="media-sheet-sub">轻点拍照 · 长按录像</span>
             </button>
             <button
               className="media-sheet-item"

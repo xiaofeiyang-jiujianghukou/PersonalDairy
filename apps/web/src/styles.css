@@ -280,6 +280,10 @@ button.ghost:disabled {
   align-items: center;
   gap: 2px;
   color: #1a1a1a;
+  /* 长按"拍摄"录制视频:禁用长按选中/系统菜单,避免打断手势 */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .media-sheet-item:active {
