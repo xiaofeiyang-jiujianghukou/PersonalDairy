@@ -297,6 +297,151 @@ button.ghost:disabled {
   -ms-touch-action: none;
 }
 
+/* ---------- 应用内微信式相机 ---------- */
+.camera-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: #000;
+  overflow: hidden;
+}
+
+.camera-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+
+.camera-close {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  left: 14px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.camera-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+/* 微信式:⚡(左) ｜ 快门(中) ｜ ⟳ 切换前后置(右) */
+.camera-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0 34px;
+  box-sizing: border-box;
+}
+
+.camera-side-btn {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.camera-side-btn.on {
+  color: #ffd479;
+}
+
+.camera-side-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.camera-shutter-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 快门:轻触拍照、长按摄像;touch-action:none 保证长按不被系统手势取消 */
+.camera-shutter {
+  width: 78px;
+  height: 78px;
+  border-radius: 50%;
+  border: 4px solid #fff;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  -ms-touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  cursor: pointer;
+}
+
+.camera-shutter-inner {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  background: #fff;
+  transition: border-radius 0.15s ease, width 0.15s ease, height 0.15s ease, background 0.15s ease;
+}
+
+.camera-shutter.recording .camera-shutter-inner {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: #ff3b30;
+}
+
+.camera-tip {
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 14px;
+  margin: 0;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+.camera-tip.warn {
+  color: #ffd479;
+}
+
+.camera-hint,
+.camera-err {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 45%;
+  text-align: center;
+  color: #fff;
+  font-size: 14px;
+}
+
+.camera-err {
+  color: #ffb4b4;
+}
+
 .media-sheet-item.cancel {
   margin-top: 6px;
   border-top: 1px solid var(--line);

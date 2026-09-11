@@ -7,11 +7,12 @@ import {
 } from 'react';
 import { uploadMedia } from '../lib/image';
 import ResolvedImage from './ResolvedImage';
+import CameraCapture from './CameraCapture';
 import { newId, type Block } from '../lib/blocks';
 
 /**
  * 块编辑器:文字是可直接编辑的文本框,图片/视频是内联显示的真实媒体。
- * 粘贴/按钮(拍照/相册/录像/视频)后,媒体当场出现在文字中间,可在其上下继续写。
+ * 粘贴/「＋ 图片/视频」(应用内相机 或 相册)后,媒体当场出现在文字中间,可在其上下继续写。
  */
 export default function BlocksEditor({
   blocks,
@@ -23,11 +24,7 @@ export default function BlocksEditor({
   const [uploading, setUploading] = useState(false);
   const [pendingFocus, setPendingFocus] = useState<string | null>(null);
   const [mediaMenu, setMediaMenu] = useState(false); // 微信式:一个入口 → 拍摄 / 从相册选择
-  // 「拍摄」直接打开系统相机(ACTION_IMAGE_CAPTURE)。拍照/录像由**相机自己**处理:
-  // 相机界面里"轻触拍照、长按摄像",返回什么就插入什么(视频也能拿到)。
-  // 注意 accept 只能是 image/* —— 同时写 image/*,video/* 会让 Capacitor 走录像 Intent,
-  // 解析不到时就被系统退回文件选择器。
-  const photoRef = useRef<HTMLInputElement>(null);
+  const [showCamera, setShowCamera] = useState(false); // 应用内相机
   const pickRef = useRef<HTMLInputElement>(null); // 从相册选择(照片或视频)
   const taRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
@@ -120,6 +117,11 @@ export default function BlocksEditor({
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    insertAtEnd(file);
+  }
+
+  /** 把媒体插到最后一个文字块的末尾(相机拍完 / 相册选完都走这里)。 */
+  function insertAtEnd(file: File) {
     const last = blocks.length - 1;
     const lastBlock = blocks[last];
     if (lastBlock && lastBlock.kind === 'text') {
@@ -160,14 +162,6 @@ export default function BlocksEditor({
       )}
 
       <input
-        ref={photoRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        style={{ display: 'none' }}
-        onChange={onPick}
-      />
-      <input
         ref={pickRef}
         type="file"
         accept="image/*,video/*"
@@ -181,7 +175,7 @@ export default function BlocksEditor({
         </button>
       </div>
 
-      {/* 微信式:一个「拍摄」直接进相机(相机里轻触拍照、长按摄像),外加从相册选择 */}
+      {/* 微信式:一个「拍摄」进应用内相机(轻触拍照、长按摄像),外加从相册选择 */}
       {mediaMenu && (
         <div className="media-sheet-mask" onClick={() => setMediaMenu(false)}>
           <div className="media-sheet" onClick={(e) => e.stopPropagation()}>
@@ -189,11 +183,11 @@ export default function BlocksEditor({
               className="media-sheet-item"
               onClick={() => {
                 setMediaMenu(false);
-                photoRef.current?.click(); // 直接打开系统相机,手势交给相机自己
+                setShowCamera(true);
               }}
             >
               <span className="media-sheet-main">拍摄</span>
-              <span className="media-sheet-sub">相机内轻触拍照 · 长按摄像</span>
+              <span className="media-sheet-sub">轻触拍照 · 长按摄像</span>
             </button>
             <button
               className="media-sheet-item"
@@ -210,6 +204,16 @@ export default function BlocksEditor({
             </button>
           </div>
         </div>
+      )}
+
+      {showCamera && (
+        <CameraCapture
+          onCapture={(file) => {
+            setShowCamera(false);
+            insertAtEnd(file);
+          }}
+          onClose={() => setShowCamera(false)}
+        />
       )}
     </div>
   );
