@@ -306,15 +306,32 @@ button.ghost:disabled {
   overflow: hidden;
 }
 
-/* 关键:contain 而不是 cover —— cover 会把横向的相机流"铺满"竖屏,
-   裁掉绝大部分画面,看起来就是"放大了 N 倍、糊得看不清"。 */
-.camera-video {
+/* 关键:cover 会把横向相机流"铺满"竖屏 → 夸张放大;contain 保留完整画面但留黑边。
+   由 onLoadedMetadata 按"流的方向"自动选:竖流 cover(轻微裁切铺满)、横流 contain。 */
+.camera-video.contain {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
   background: #000;
+}
+
+.camera-video.cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+
+/* 临时调试:显示相机流分辨率,便于按机型适配(确认后会移除) */
+.camera-dbg {
+  margin: 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  text-align: center;
 }
 
 .camera-video.mirror {

@@ -38,14 +38,17 @@ export default function CameraCapture({
   const [torchOn, setTorchOn] = useState(false);
   const [torchSupported, setTorchSupported] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
+  // 适配:相机流是竖的(1080x1920)就 cover 铺满(只轻微裁切);是横的就 contain,避免夸张放大
+  const [fit, setFit] = useState<'contain' | 'cover'>('contain');
+  const [dbg, setDbg] = useState('');
 
   // ---------- 打开/切换摄像头 ----------
   const openStream = useCallback(async (mode: 'environment' | 'user') => {
     try {
       streamRef.current?.getTracks().forEach((t) => t.stop());
       const s = await navigator.mediaDevices.getUserMedia({
-        // 尽量要高清,避免预览糊;具体分辨率由设备给最接近的
-        video: { facingMode: mode, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        // 优先要"竖屏"流(1080x1920),这样竖屏界面里能铺满且只轻微裁切
+        video: { facingMode: mode, width: { ideal: 1080 }, height: { ideal: 1920 } },
         audio: true,
       });
       streamRef.current = s;
@@ -234,10 +237,16 @@ export default function CameraCapture({
     <div className="camera-overlay">
       <video
         ref={videoRef}
-        className={`camera-video${facing === 'user' ? ' mirror' : ''}`}
+        className={`camera-video ${fit}${facing === 'user' ? ' mirror' : ''}`}
         playsInline
         muted
         autoPlay
+        onLoadedMetadata={(e) => {
+          const v = e.currentTarget;
+          const portraitStream = v.videoHeight >= v.videoWidth;
+          setFit(portraitStream ? 'cover' : 'contain');
+          setDbg(`流 ${v.videoWidth}x${v.videoHeight} · 屏 ${window.innerWidth}x${window.innerHeight} · ${portraitStream ? 'cover' : 'contain'}`);
+        }}
       />
 
       {!ready && !err && <p className="camera-hint">正在打开相机…</p>}
@@ -282,6 +291,7 @@ export default function CameraCapture({
         </div>
         {!canRecord && <p className="camera-tip warn">这台设备不支持应用内录像</p>}
         {notice && <p className="camera-tip warn">{notice}</p>}
+        {dbg && <p className="camera-dbg">{dbg}</p>}
       </div>
     </div>
   );
