@@ -23,75 +23,13 @@ export default function BlocksEditor({
   const [uploading, setUploading] = useState(false);
   const [pendingFocus, setPendingFocus] = useState<string | null>(null);
   const [mediaMenu, setMediaMenu] = useState(false); // 微信式:一个入口 → 拍摄 / 从相册选择
-  // Android 相机 Intent 必须指明"拍照"还是"录像"(accept 只能一种);混在一起会被系统退回文件选择器
-  const photoRef = useRef<HTMLInputElement>(null); // 拍摄照片 -> ACTION_IMAGE_CAPTURE
-  const videoRef = useRef<HTMLInputElement>(null); // 拍摄视频 -> ACTION_VIDEO_CAPTURE
+  // 「拍摄」直接打开系统相机(ACTION_IMAGE_CAPTURE)。拍照/录像由**相机自己**处理:
+  // 相机界面里"轻触拍照、长按摄像",返回什么就插入什么(视频也能拿到)。
+  // 注意 accept 只能是 image/* —— 同时写 image/*,video/* 会让 Capacitor 走录像 Intent,
+  // 解析不到时就被系统退回文件选择器。
+  const photoRef = useRef<HTMLInputElement>(null);
   const pickRef = useRef<HTMLInputElement>(null); // 从相册选择(照片或视频)
-  const shootRef = useRef<HTMLButtonElement | null>(null); // 「拍摄」按钮(挂原生非 passive 触摸监听)
-  const [holding, setHolding] = useState(false); // 长按中(显示"松手开始录像")
   const taRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
-
-  /**
-   * 「拍摄」轻点拍照 / 长按录像。
-   * 必须用**非 passive 的原生 touch 监听 + preventDefault**:Android WebView 默认会把
-   * "按住"认领成手势(长按/选择),于是只发 pointercancel、不发 pointerup,
-   * 长按永远收不到"松手"。React 的 onTouchStart 是被动的,preventDefault 无效。
-   * 真正的 input.click() 仍在 touchend 里执行(保留用户激活,否则文件选择器会被拦)。
-   */
-  useEffect(() => {
-    if (!mediaMenu) return;
-    const el = shootRef.current;
-    if (!el) return;
-    let long = false;
-    let done = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const start = (e: Event) => {
-      if (e.cancelable) e.preventDefault();
-      done = false;
-      long = false;
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        long = true;
-        setHolding(true);
-      }, 400);
-    };
-    const finish = (e: Event) => {
-      if (e.cancelable) e.preventDefault();
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (done) return;
-      done = true;
-      const wasLong = long;
-      long = false;
-      setHolding(false);
-      setMediaMenu(false);
-      if (wasLong) videoRef.current?.click();
-      else photoRef.current?.click();
-    };
-    const cancel = () => {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      long = false;
-      setHolding(false);
-    };
-    el.addEventListener('touchstart', start, { passive: false });
-    el.addEventListener('touchend', finish, { passive: false });
-    el.addEventListener('touchcancel', cancel, { passive: false });
-    el.addEventListener('mousedown', start);
-    el.addEventListener('mouseup', finish);
-    return () => {
-      el.removeEventListener('touchstart', start);
-      el.removeEventListener('touchend', finish);
-      el.removeEventListener('touchcancel', cancel);
-      el.removeEventListener('mousedown', start);
-      el.removeEventListener('mouseup', finish);
-      if (timer) clearTimeout(timer);
-    };
-  }, [mediaMenu]);
 
   useEffect(() => {
     for (const b of blocks) {
@@ -230,14 +168,6 @@ export default function BlocksEditor({
         onChange={onPick}
       />
       <input
-        ref={videoRef}
-        type="file"
-        accept="video/*"
-        capture="environment"
-        style={{ display: 'none' }}
-        onChange={onPick}
-      />
-      <input
         ref={pickRef}
         type="file"
         accept="image/*,video/*"
@@ -251,15 +181,19 @@ export default function BlocksEditor({
         </button>
       </div>
 
-      {/* 微信式:一个「拍摄」——轻点拍照、长按录像;外加从相册选择。 */}
+      {/* 微信式:一个「拍摄」直接进相机(相机里轻触拍照、长按摄像),外加从相册选择 */}
       {mediaMenu && (
         <div className="media-sheet-mask" onClick={() => setMediaMenu(false)}>
           <div className="media-sheet" onClick={(e) => e.stopPropagation()}>
-            <button ref={shootRef} className="media-sheet-item shoot" onContextMenu={(e) => e.preventDefault()}>
-              <span className="media-sheet-main">{holding ? '松手开始录像' : '拍摄'}</span>
-              <span className="media-sheet-sub">
-                {holding ? '● 录像' : '轻点拍照 · 长按录像'}
-              </span>
+            <button
+              className="media-sheet-item"
+              onClick={() => {
+                setMediaMenu(false);
+                photoRef.current?.click(); // 直接打开系统相机,手势交给相机自己
+              }}
+            >
+              <span className="media-sheet-main">拍摄</span>
+              <span className="media-sheet-sub">相机内轻触拍照 · 长按摄像</span>
             </button>
             <button
               className="media-sheet-item"

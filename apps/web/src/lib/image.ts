@@ -44,9 +44,14 @@ export async function uploadImage(file: File): Promise<string> {
   return makeDiaryImgRef(data.id);
 }
 
-/** 是否视频文件(按 MIME 前缀)。 */
+/**
+ * 是否视频文件:先看 MIME 前缀,再兜底看扩展名。
+ * 相机(ACTION_IMAGE_CAPTURE)长按录制返回的视频,个别 WebView 会给出空的 file.type,
+ * 只判 MIME 会把视频误当图片,所以加扩展名兜底。
+ */
 export function isVideoFile(file: File): boolean {
-  return file.type.startsWith('video/');
+  if (file.type.startsWith('video/')) return true;
+  return /\.(mp4|mov|m4v|3gp|3gpp|webm|mkv|avi|ts)$/i.test(file.name || '');
 }
 
 /**
