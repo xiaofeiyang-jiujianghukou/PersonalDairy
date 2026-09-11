@@ -38,8 +38,9 @@ export default function CameraCapture({
   const [torchOn, setTorchOn] = useState(false);
   const [torchSupported, setTorchSupported] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
-  // 适配:相机流是竖的(1080x1920)就 cover 铺满(只轻微裁切);是横的就 contain,避免夸张放大
-  const [fit, setFit] = useState<'contain' | 'cover'>('contain');
+  // 适配:横屏流(1920x1080)在竖屏界面里要**旋转 90° 并 cover** 才能铺满(微信那样);
+  // 竖屏流则直接 cover。拍照时按同样的方向把画面转正,避免存下来是歪的。
+  const [rotate90, setRotate90] = useState(false);
   const [dbg, setDbg] = useState('');
 
   // ---------- 打开/切换摄像头 ----------
@@ -102,25 +103,36 @@ export default function CameraCapture({
     }
   }, [torchOn]);
 
-  // ---------- 拍照:取当前帧 ----------
+  // ---------- 拍照:取当前帧(按预览方向转正) ----------
   const shootPhoto = useCallback(async () => {
     const v = videoRef.current;
     if (!v || !v.videoWidth) return; // 画面还没就绪,忽略这次轻触
+    const vw = v.videoWidth;
+    const vh = v.videoHeight;
+    const rot = rotate90;
     const c = document.createElement('canvas');
-    c.width = v.videoWidth;
-    c.height = v.videoHeight;
+    c.width = rot ? vh : vw;
+    c.height = rot ? vw : vh;
     const ctx = c.getContext('2d');
     if (!ctx) return;
-    ctx.drawImage(v, 0, 0, c.width, c.height);
+    ctx.save();
+    if (rot) {
+      // 预览顺时针转了 90°,照片同步顺时针转 90°,保证"所见即所得"且方向正确
+      ctx.translate(c.width, 0);
+      ctx.rotate(Math.PI / 2);
+    }
+    ctx.drawImage(v, 0, 0, vw, vh);
+    ctx.restore();
     const blob = await new Promise<Blob | null>((res) => c.toBlob((b) => res(b), 'image/jpeg', 0.92));
     if (!blob) return;
     onCapture(new File([blob], `photo-${Date.now()}.jpg`, { type: 'image/jpeg' }));
-  }, [onCapture]);
+  }, [onCapture, rotate90]);
 
   // ---------- 摄像 ----------
   const startRecording = useCallback(() => {
     const s = streamRef.current;
-    if (!s || recordingRef.current) return;
+    const v = videoRef.current;
+    if (!s || !v || recordingRef.current) return;
     if (typeof window.MediaRecorder === 'undefined') return;
     const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'].find(
       (m) => {
@@ -131,11 +143,39 @@ export default function CameraCapture({
         }
       },
     );
+
+    // 预览旋转过 90° 时,录像也要转正:用 canvas 合成(旋转画面 + 原声)
+    let recStream: MediaStream = s;
+    let canvas: HTMLCanvasElement | null = null;
+    let raf = 0;
+    if (rotate90 && typeof HTMLCanvasElement.prototype.captureStream === 'function') {
+      canvas = document.createElement('canvas');
+      canvas.width = v.videoHeight;
+      canvas.height = v.videoWidth;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const draw = () => {
+          if (!canvas) return;
+          ctx.save();
+          ctx.translate(canvas.width, 0);
+          ctx.rotate(Math.PI / 2);
+          ctx.drawImage(v, 0, 0, v.videoWidth, v.videoHeight);
+          ctx.restore();
+          raf = requestAnimationFrame(draw);
+        };
+        draw();
+        const cstream = canvas.captureStream(30);
+        for (const t of s.getAudioTracks()) cstream.addTrack(t);
+        recStream = cstream;
+      }
+    }
+
     const chunks: Blob[] = [];
     let rec: MediaRecorder;
     try {
-      rec = new MediaRecorder(s, mime ? { mimeType: mime } : undefined);
+      rec = new MediaRecorder(recStream, mime ? { mimeType: mime } : undefined);
     } catch {
+      if (raf) cancelAnimationFrame(raf);
       setErr('这台设备不支持应用内录像,请用「从手机相册选择」。');
       setCanRecord(false);
       return;
@@ -144,6 +184,7 @@ export default function CameraCapture({
       if (e.data && e.data.size) chunks.push(e.data);
     };
     rec.onstop = () => {
+      if (raf) cancelAnimationFrame(raf);
       recordingRef.current = false;
       setRecording(false);
       const blob = new Blob(chunks, { type: chunks[0]?.type || mime || 'video/webm' });
@@ -156,7 +197,7 @@ export default function CameraCapture({
     recordingRef.current = true;
     setRecording(true);
     setSecs(0);
-  }, [onCapture]);
+  }, [onCapture, rotate90]);
 
   const stopRecording = useCallback(() => {
     if (!recordingRef.current) return;
@@ -237,15 +278,19 @@ export default function CameraCapture({
     <div className="camera-overlay">
       <video
         ref={videoRef}
-        className={`camera-video ${fit}${facing === 'user' ? ' mirror' : ''}`}
+        className={`camera-video${rotate90 ? ' rot90' : ''}${facing === 'user' ? ' mirror' : ''}`}
         playsInline
         muted
         autoPlay
         onLoadedMetadata={(e) => {
           const v = e.currentTarget;
-          const portraitStream = v.videoHeight >= v.videoWidth;
-          setFit(portraitStream ? 'cover' : 'contain');
-          setDbg(`流 ${v.videoWidth}x${v.videoHeight} · 屏 ${window.innerWidth}x${window.innerHeight} · ${portraitStream ? 'cover' : 'contain'}`);
+          const landscapeStream = v.videoWidth > v.videoHeight;
+          const portraitScreen = window.innerHeight > window.innerWidth;
+          const rot = landscapeStream && portraitScreen;
+          setRotate90(rot);
+          setDbg(
+            `流 ${v.videoWidth}x${v.videoHeight} · 屏 ${window.innerWidth}x${window.innerHeight} · ${rot ? '旋转90°+cover' : 'cover'}`,
+          );
         }}
       />
 

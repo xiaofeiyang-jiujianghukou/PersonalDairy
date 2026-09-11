@@ -306,24 +306,28 @@ button.ghost:disabled {
   overflow: hidden;
 }
 
-/* 关键:cover 会把横向相机流"铺满"竖屏 → 夸张放大;contain 保留完整画面但留黑边。
-   由 onLoadedMetadata 按"流的方向"自动选:竖流 cover(轻微裁切铺满)、横流 contain。 */
-.camera-video.contain {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  background: #000;
-}
-
-.camera-video.cover {
+/* 相机预览铺满屏幕(cover)。横屏流在竖屏里由 .rot90 旋转 90° 后同样铺满。 */
+.camera-video {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
   background: #000;
+}
+
+/* 横屏流(1920x1080)+ 竖屏:顺时针转 90°,宽高对调后铺满 → 和微信一样没有黑边 */
+.camera-video.rot90 {
+  inset: auto;
+  top: 50%;
+  left: 50%;
+  width: 100vh;
+  height: 100vw;
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+
+.camera-video.rot90.mirror {
+  transform: translate(-50%, -50%) rotate(90deg) scaleX(-1);
 }
 
 /* 临时调试:显示相机流分辨率,便于按机型适配(确认后会移除) */
