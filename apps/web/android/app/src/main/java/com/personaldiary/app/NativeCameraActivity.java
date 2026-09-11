@@ -164,6 +164,24 @@ public class NativeCameraActivity extends AppCompatActivity {
         close.setOnClickListener(v -> cancel());
         root.addView(close, closeLp);
 
+        // 右上角:极淡的版本号(方便确认当前装的是哪一版)
+        TextView verTag = new TextView(this);
+        String vn = "?";
+        try {
+            vn = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception ignored) {
+        }
+        verTag.setText("v" + vn);
+        verTag.setTextColor(0x59FFFFFF);
+        verTag.setTextSize(12);
+        verTag.setShadowLayer(4f, 0f, 1f, Color.BLACK);
+        FrameLayout.LayoutParams verLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        verLp.gravity = Gravity.TOP | Gravity.END;
+        verLp.topMargin = dp(30);
+        verLp.rightMargin = dp(14);
+        root.addView(verTag, verLp);
+
         LinearLayout bottom = new LinearLayout(this);
         bottom.setOrientation(LinearLayout.VERTICAL);
         bottom.setGravity(Gravity.CENTER_HORIZONTAL);
