@@ -23,7 +23,9 @@ export default function BlocksEditor({
   const [uploading, setUploading] = useState(false);
   const [pendingFocus, setPendingFocus] = useState<string | null>(null);
   const [mediaMenu, setMediaMenu] = useState(false); // 微信式:一个入口 → 拍摄 / 从相册选择
-  const captureRef = useRef<HTMLInputElement>(null); // 拍摄(照片或视频,交给系统相机)
+  // Android 相机 Intent 必须指明"拍照"还是"录像"(accept 只能一种);混在一起会被系统退回文件选择器
+  const photoRef = useRef<HTMLInputElement>(null); // 拍摄照片 -> ACTION_IMAGE_CAPTURE
+  const videoRef = useRef<HTMLInputElement>(null); // 拍摄视频 -> ACTION_VIDEO_CAPTURE
   const pickRef = useRef<HTMLInputElement>(null); // 从相册选择(照片或视频)
   const taRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
@@ -156,9 +158,17 @@ export default function BlocksEditor({
       )}
 
       <input
-        ref={captureRef}
+        ref={photoRef}
         type="file"
-        accept="image/*,video/*"
+        accept="image/*"
+        capture="environment"
+        style={{ display: 'none' }}
+        onChange={onPick}
+      />
+      <input
+        ref={videoRef}
+        type="file"
+        accept="video/*"
         capture="environment"
         style={{ display: 'none' }}
         onChange={onPick}
@@ -177,7 +187,7 @@ export default function BlocksEditor({
         </button>
       </div>
 
-      {/* 微信式:不列一堆按钮,只给"拍摄 / 从手机相册选择"两个选择 */}
+      {/* 微信式:一个入口,少数几个清晰的选择(拍摄必须区分拍照/录像,否则系统会退回文件选择器) */}
       {mediaMenu && (
         <div className="media-sheet-mask" onClick={() => setMediaMenu(false)}>
           <div className="media-sheet" onClick={(e) => e.stopPropagation()}>
@@ -185,11 +195,21 @@ export default function BlocksEditor({
               className="media-sheet-item"
               onClick={() => {
                 setMediaMenu(false);
-                captureRef.current?.click();
+                photoRef.current?.click();
               }}
             >
-              <span className="media-sheet-main">拍摄</span>
-              <span className="media-sheet-sub">照片或视频</span>
+              <span className="media-sheet-main">拍摄照片</span>
+              <span className="media-sheet-sub">打开相机</span>
+            </button>
+            <button
+              className="media-sheet-item"
+              onClick={() => {
+                setMediaMenu(false);
+                videoRef.current?.click();
+              }}
+            >
+              <span className="media-sheet-main">拍摄视频</span>
+              <span className="media-sheet-sub">打开录像</span>
             </button>
             <button
               className="media-sheet-item"
@@ -199,6 +219,7 @@ export default function BlocksEditor({
               }}
             >
               <span className="media-sheet-main">从手机相册选择</span>
+              <span className="media-sheet-sub">照片或视频</span>
             </button>
             <button className="media-sheet-item cancel" onClick={() => setMediaMenu(false)}>
               取消
