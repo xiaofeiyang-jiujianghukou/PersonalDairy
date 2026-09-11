@@ -41,7 +41,6 @@ export default function CameraCapture({
   // 适配:横屏流(1920x1080)在竖屏界面里要**旋转 90° 并 cover** 才能铺满(微信那样);
   // 竖屏流则直接 cover。拍照时按同样的方向把画面转正,避免存下来是歪的。
   const [rotate90, setRotate90] = useState(false);
-  const [dbg, setDbg] = useState('');
 
   // ---------- 打开/切换摄像头 ----------
   const openStream = useCallback(async (mode: 'environment' | 'user') => {
@@ -288,9 +287,6 @@ export default function CameraCapture({
           const portraitScreen = window.innerHeight > window.innerWidth;
           const rot = landscapeStream && portraitScreen;
           setRotate90(rot);
-          setDbg(
-            `流 ${v.videoWidth}x${v.videoHeight} · 屏 ${window.innerWidth}x${window.innerHeight} · ${rot ? '旋转90°+cover' : 'cover'}`,
-          );
         }}
       />
 
@@ -336,7 +332,6 @@ export default function CameraCapture({
         </div>
         {!canRecord && <p className="camera-tip warn">这台设备不支持应用内录像</p>}
         {notice && <p className="camera-tip warn">{notice}</p>}
-        {dbg && <p className="camera-dbg">{dbg}</p>}
       </div>
     </div>
   );

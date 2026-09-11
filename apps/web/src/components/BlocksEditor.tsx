@@ -6,6 +6,7 @@ import {
   type ClipboardEvent,
 } from 'react';
 import { uploadMedia } from '../lib/image';
+import { nativeCameraAvailable, takeWithNativeCamera } from '../lib/nativeCamera';
 import ResolvedImage from './ResolvedImage';
 import CameraCapture from './CameraCapture';
 import { newId, type Block } from '../lib/blocks';
@@ -183,7 +184,18 @@ export default function BlocksEditor({
               className="media-sheet-item"
               onClick={() => {
                 setMediaMenu(false);
-                setShowCamera(true);
+                if (nativeCameraAvailable()) {
+                  // Android:走原生相机(CameraX)——和微信一致,方向/比例原生控制
+                  setUploading(true);
+                  void takeWithNativeCamera()
+                    .then((file) => {
+                      if (file) insertAtEnd(file);
+                    })
+                    .catch((e) => alert((e as Error).message))
+                    .finally(() => setUploading(false));
+                } else {
+                  setShowCamera(true); // 桌面端等:用 Web 相机兜底
+                }
               }}
             >
               <span className="media-sheet-main">拍摄</span>
