@@ -73,6 +73,8 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
 
       {notice && <p className="ok" style={{ textAlign: 'center' }}>{notice}</p>}
 
+      <p className="mine-version">版本 v{__APP_VERSION__}</p>
+
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
       {showCompanion && <CompanionModal onClose={() => setShowCompanion(false)} />}
     </div>

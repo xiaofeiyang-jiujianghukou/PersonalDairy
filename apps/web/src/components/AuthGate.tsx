@@ -183,6 +183,7 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
             <button className="ghost" onClick={() => setMode('login')}>账号密码登录</button>
             {!qr && <button className="primary" onClick={startQr}>重新生成登录码</button>}
           </div>
+          <p className="auth-version">版本 v{__APP_VERSION__}</p>
         </div>
       </div>
     );
@@ -333,6 +334,7 @@ export default function AuthGate({ onAuthed }: { onAuthed: () => void }) {
           </>
         )}
         <p className="auth-hint">手机号登录、微信登录即将开放(本期仅用户名+密码、扫码)。</p>
+        <p className="auth-version">版本 v{__APP_VERSION__}</p>
       </div>
     </div>
   );

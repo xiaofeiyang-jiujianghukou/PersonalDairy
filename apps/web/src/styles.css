@@ -949,6 +949,23 @@ a {
   margin: 16px 0 0;
 }
 
+/* 版本号:便于确认当前装的是哪一版 */
+.auth-version {
+  color: var(--ink-soft);
+  font-size: 11px;
+  text-align: center;
+  margin: 8px 0 0;
+  opacity: 0.7;
+}
+
+.mine-version {
+  color: var(--ink-soft);
+  font-size: 12px;
+  text-align: center;
+  margin: 14px 0 4px;
+  opacity: 0.7;
+}
+
 /* ---------- AI 陪伴 ---------- */
 .companion-modal {
   max-width: 560px;
