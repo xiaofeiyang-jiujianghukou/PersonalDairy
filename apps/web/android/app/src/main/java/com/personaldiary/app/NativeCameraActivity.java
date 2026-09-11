@@ -40,6 +40,8 @@ import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageCaptureException;
 import androidx.camera.core.MeteringPoint;
 import androidx.camera.core.Preview;
+import androidx.camera.core.UseCaseGroup;
+import androidx.camera.core.ViewPort;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.video.FallbackStrategy;
 import androidx.camera.video.FileOutputOptions;
@@ -110,7 +112,7 @@ public class NativeCameraActivity extends AppCompatActivity {
     private int seconds = 0;
 
     // ---------------- 编辑阶段 ----------------
-    private enum Tool { DRAW, TEXT, MOSAIC }
+    private enum Tool { DRAW, TEXT, MOSAIC, STICKER }
 
     private Bitmap base;          // 当前底图(裁剪/旋转后)
     private Bitmap pixelated;     // 马赛克用的低清底图
@@ -119,7 +121,8 @@ public class NativeCameraActivity extends AppCompatActivity {
     private final List<Op> ops = new ArrayList<>();
     private final List<Op> redoOps = new ArrayList<>();
     private Tool tool = Tool.DRAW;
-    private ImageView drawBtn, textBtn, mosaicBtn, cropBtn, undoBtn, redoBtn;
+    private ImageView drawBtn, textBtn, mosaicBtn, stickerBtn, cropBtn, undoBtn, redoBtn;
+    private LinearLayout emojiBar; // 表情选择条(默认隐藏)
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -319,7 +322,8 @@ public class NativeCameraActivity extends AppCompatActivity {
                 finishWithError("相机初始化失败:" + e.getMessage());
                 return;
             }
-            bindUseCases();
+            // 等预览完成布局,拿到有效的 ViewPort,再绑定 → 拍照/录像按预览比例裁剪(所见即所得)
+            previewView.post(this::bindUseCases);
         }, ContextCompat.getMainExecutor(this));
     }
 
@@ -346,7 +350,19 @@ public class NativeCameraActivity extends AppCompatActivity {
 
         provider.unbindAll();
         try {
-            camera = provider.bindToLifecycle(this, selector, preview, imageCapture, videoCapture);
+            ViewPort vp = previewView.getViewPort();
+            if (vp != null) {
+                // 共享视口:照片/视频按"预览看到的那一块"裁剪 → 编辑页不再有黑边
+                UseCaseGroup group = new UseCaseGroup.Builder()
+                        .addUseCase(preview)
+                        .addUseCase(imageCapture)
+                        .addUseCase(videoCapture)
+                        .setViewPort(vp)
+                        .build();
+                camera = provider.bindToLifecycle(this, selector, group);
+            } else {
+                camera = provider.bindToLifecycle(this, selector, preview, imageCapture, videoCapture);
+            }
         } catch (Exception e) {
             finishWithError("打开相机失败:" + e.getMessage());
         }
@@ -502,71 +518,141 @@ public class NativeCameraActivity extends AppCompatActivity {
         editor.addView(editorView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // 顶部:撤回 / 前进
+        // ---------- 顶部:取消(左) + 撤回/前进(右) ----------
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
-        top.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView cancelBtn = textBtn("取消", WHITE);
+        cancelBtn.setOnClickListener(v -> backToCamera());
+        top.addView(cancelBtn, new LinearLayout.LayoutParams(dp(72), dp(48)));
+
+        top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+
         undoBtn = icon(R.drawable.ic_undo);
+        redoBtn = icon(R.drawable.ic_redo);
         undoBtn.setPadding(dp(10), dp(10), dp(10), dp(10));
+        redoBtn.setPadding(dp(10), dp(10), dp(10), dp(10));
         undoBtn.setOnClickListener(v -> {
             if (undo()) editorView.invalidate();
         });
-        redoBtn = icon(R.drawable.ic_redo);
-        redoBtn.setPadding(dp(10), dp(10), dp(10), dp(10));
         redoBtn.setOnClickListener(v -> {
             if (redo()) editorView.invalidate();
         });
-        LinearLayout.LayoutParams tb = new LinearLayout.LayoutParams(dp(48), dp(48));
-        tb.rightMargin = dp(6);
-        top.addView(undoBtn, tb);
-        top.addView(redoBtn, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        top.addView(undoBtn, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        LinearLayout.LayoutParams redoLp = new LinearLayout.LayoutParams(dp(48), dp(48));
+        redoLp.rightMargin = dp(6);
+        top.addView(redoBtn, redoLp);
+
         FrameLayout.LayoutParams topLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         topLp.gravity = Gravity.TOP;
-        topLp.topMargin = dp(12);
-        topLp.rightMargin = dp(6);
+        topLp.topMargin = dp(8);
+        topLp.leftMargin = dp(8);
+        topLp.rightMargin = dp(8);
         editor.addView(top, topLp);
 
-        // 底部工具条:取消 | 涂鸦 文字 马赛克 裁剪 | 完成
+        // ---------- 底部:涂鸦 文字 表情 马赛克 裁剪(左) + 完成(右,绿色) ----------
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView cancelBtn = textBtn("取消", WHITE);
-        cancelBtn.setOnClickListener(v -> backToCamera());
-
         drawBtn = icon(R.drawable.ic_draw);
         textBtn = icon(R.drawable.ic_text);
         mosaicBtn = icon(R.drawable.ic_mosaic);
+        stickerBtn = icon(R.drawable.ic_emoji);
         cropBtn = icon(R.drawable.ic_crop);
-        for (ImageView b : new ImageView[]{drawBtn, textBtn, mosaicBtn, cropBtn}) {
-            b.setPadding(dp(10), dp(10), dp(10), dp(10));
+        for (ImageView b : new ImageView[]{drawBtn, textBtn, mosaicBtn, stickerBtn, cropBtn}) {
+            b.setPadding(dp(9), dp(9), dp(9), dp(9));
+            bar.addView(b, new LinearLayout.LayoutParams(dp(48), dp(48)));
         }
         drawBtn.setOnClickListener(v -> selectTool(Tool.DRAW));
         textBtn.setOnClickListener(v -> selectTool(Tool.TEXT));
         mosaicBtn.setOnClickListener(v -> selectTool(Tool.MOSAIC));
+        stickerBtn.setOnClickListener(v -> {
+            selectTool(Tool.STICKER);
+            showEmojiBar();
+        });
         cropBtn.setOnClickListener(v -> showCropDialog());
 
-        TextView doneBtn = textBtn("完成", 0xFF07C160);
-        doneBtn.setOnClickListener(v -> finishEditing());
+        bar.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
 
-        LinearLayout.LayoutParams flex = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        bar.addView(cancelBtn, flex);
-        bar.addView(drawBtn, flex);
-        bar.addView(textBtn, flex);
-        bar.addView(mosaicBtn, flex);
-        bar.addView(cropBtn, flex);
-        bar.addView(doneBtn, flex);
+        TextView doneBtn = textBtn("完成", WHITE);
+        android.graphics.drawable.GradientDrawable pill = new android.graphics.drawable.GradientDrawable();
+        pill.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        pill.setCornerRadius(dp(8));
+        pill.setColor(0xFF07C160);
+        doneBtn.setBackground(pill);
+        doneBtn.setPadding(dp(18), dp(8), dp(18), dp(8));
+        doneBtn.setOnClickListener(v -> finishEditing());
+        bar.addView(doneBtn, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         FrameLayout.LayoutParams barLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         barLp.gravity = Gravity.BOTTOM;
-        barLp.bottomMargin = dp(20);
+        barLp.bottomMargin = dp(22);
+        barLp.leftMargin = dp(10);
+        barLp.rightMargin = dp(10);
         editor.addView(bar, barLp);
+
+        // 表情选择条(默认隐藏,点"表情"才出现),位于底部工具条上方
+        emojiBar = buildEmojiBar();
+        FrameLayout.LayoutParams emojiLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(60));
+        emojiLp.gravity = Gravity.BOTTOM;
+        emojiLp.bottomMargin = dp(78);
+        editor.addView(emojiBar, emojiLp);
 
         setContentView(editor);
         selectTool(Tool.DRAW);
+    }
+
+    /** 表情选择条:横向可滚动的一排 emoji,点一个就贴到图上(之后可拖动)。 */
+    private LinearLayout buildEmojiBar() {
+        LinearLayout outer = new LinearLayout(this);
+        outer.setOrientation(LinearLayout.VERTICAL);
+        outer.setBackgroundColor(0xE6000000);
+        outer.setVisibility(View.GONE);
+        android.widget.HorizontalScrollView sv = new android.widget.HorizontalScrollView(this);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        String[] emojis = {
+                "\uD83D\uDE00","\uD83D\uDE04","\uD83D\uDE01","\uD83D\uDE06","\uD83D\uDE05","\uD83D\uDE02",
+                "\uD83D\uDE42","\uD83D\uDE09","\uD83D\uDE0A","\uD83D\uDE0D","\uD83E\uDD70","\uD83D\uDE18",
+                "\uD83D\uDE0E","\uD83E\uDD14","\uD83D\uDE10","\uD83D\uDE44","\uD83D\uDE0F","\uD83D\uDE22",
+                "\uD83D\uDE2D","\uD83D\uDE24","\uD83D\uDE21","\uD83E\uDD7A","\uD83D\uDE31","\uD83D\uDE34",
+                "\uD83E\uDD17","\uD83E\uDD29","\uD83D\uDE07","\uD83E\uDD23","\uD83D\uDC4D","\uD83D\uDC4E",
+                "\uD83D\uDC4F","\uD83D\uDE4F","\uD83D\uDCAA","\u2764\uFE0F","\uD83D\uDC94","\u2728",
+                "\uD83C\uDF89","\uD83D\uDD25","\u2B50","\uD83C\uDF08","\uD83C\uDF38","\uD83C\uDF40",
+                "\uD83C\uDFB5","\uD83D\uDCF7","\u2708\uFE0F","\uD83C\uDF7A","\uD83C\uDF81","\uD83D\uDC31","\uD83D\uDC36"
+        };
+        for (String e : emojis) {
+            TextView t = new TextView(this);
+            t.setText(e);
+            t.setTextSize(28);
+            t.setPadding(dp(9), dp(8), dp(9), dp(8));
+            t.setOnClickListener(v -> addSticker(e));
+            row.addView(t);
+        }
+        sv.addView(row);
+        outer.addView(sv);
+        return outer;
+    }
+
+    private void showEmojiBar() {
+        if (emojiBar == null) return;
+        emojiBar.setVisibility(emojiBar.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+    }
+
+    private void addSticker(String emoji) {
+        if (base == null) return;
+        float size = Math.max(48f, base.getWidth() / 8f);
+        ops.add(new StickerOp(emoji, base.getWidth() / 2f, base.getHeight() / 2f, size));
+        redoOps.clear();
+        if (emojiBar != null) emojiBar.setVisibility(View.GONE);
+        if (editorView != null) editorView.invalidate();
+        updateUndoRedo();
     }
 
     private void selectTool(Tool t) {
@@ -575,7 +661,9 @@ public class NativeCameraActivity extends AppCompatActivity {
         drawBtn.setAlpha(t == Tool.DRAW ? 1f : 0.45f);
         textBtn.setAlpha(t == Tool.TEXT ? 1f : 0.45f);
         mosaicBtn.setAlpha(t == Tool.MOSAIC ? 1f : 0.45f);
+        stickerBtn.setAlpha(t == Tool.STICKER ? 1f : 0.45f);
         cropBtn.setAlpha(1f);
+        if (t != Tool.STICKER && emojiBar != null) emojiBar.setVisibility(View.GONE);
         if (editorView != null) editorView.invalidate();
     }
 
@@ -593,6 +681,7 @@ public class NativeCameraActivity extends AppCompatActivity {
         base = null;
         pixelated = null;
         editorView = null;
+        emojiBar = null;
         ops.clear();
         redoOps.clear();
         buildCameraUi();
@@ -811,6 +900,48 @@ public class NativeCameraActivity extends AppCompatActivity {
         }
     }
 
+    /** 表情贴纸(可拖动;emoji 由系统彩色字体渲染,这里就是要彩色)。 */
+    private static class StickerOp extends Op {
+        String emoji;
+        float x, y, size;
+
+        StickerOp(String emoji, float x, float y, float size) {
+            this.emoji = emoji;
+            this.x = x;
+            this.y = y;
+            this.size = size;
+        }
+
+        private Paint paint(float scale) {
+            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            p.setTextSize(size * scale);
+            p.setTextAlign(Paint.Align.CENTER);
+            p.setShadowLayer(8f, 0f, 2f, 0xAA000000);
+            return p;
+        }
+
+        @Override
+        void drawImage(Canvas c, Bitmap pixelated, RectF imageRect) {
+            c.drawText(emoji, x, y + size * 0.34f, paint(1f));
+        }
+
+        @Override
+        void drawView(Canvas c, Matrix img2view, Bitmap pixelated, RectF dest) {
+            float[] pt = {x, y};
+            img2view.mapPoints(pt);
+            float scale = img2view.mapRadius(1f);
+            c.drawText(emoji, pt[0], pt[1] + size * scale * 0.34f, paint(scale));
+        }
+
+        @Override
+        void transform(Matrix m) {
+            float[] pt = {x, y};
+            m.mapPoints(pt);
+            x = pt[0];
+            y = pt[1];
+        }
+    }
+
     /** 文字(可拖动)。 */
     private static class TextOp extends Op {
         String text;
@@ -858,7 +989,7 @@ public class NativeCameraActivity extends AppCompatActivity {
         private final Matrix img2view = new Matrix();
         private StrokeOp activeStroke;
         private RectF activeRect;
-        private TextOp dragging;
+        private Op dragging;
         private float downX, downY;
 
         EditorView() {
@@ -915,19 +1046,27 @@ public class NativeCameraActivity extends AppCompatActivity {
                 case MotionEvent.ACTION_DOWN:
                     downX = pt[0];
                     downY = pt[1];
-                    if (tool == Tool.TEXT) {
+                    if (tool == Tool.TEXT || tool == Tool.STICKER) {
+                        // 先看有没有点到已存在的文字/表情 → 拖动它
                         dragging = null;
                         for (int i = ops.size() - 1; i >= 0; i--) {
                             Op op = ops.get(i);
+                            float ox, oy, os;
                             if (op instanceof TextOp) {
                                 TextOp t = (TextOp) op;
-                                if (Math.abs(t.x - pt[0]) < t.size * 6 && Math.abs(t.y - pt[1]) < t.size * 2) {
-                                    dragging = t;
-                                    break;
-                                }
+                                ox = t.x; oy = t.y; os = t.size;
+                            } else if (op instanceof StickerOp) {
+                                StickerOp t = (StickerOp) op;
+                                ox = t.x; oy = t.y; os = t.size;
+                            } else {
+                                continue;
+                            }
+                            if (Math.abs(ox - pt[0]) < os * 1.2f && Math.abs(oy - pt[1]) < os * 1.2f) {
+                                dragging = op;
+                                break;
                             }
                         }
-                        if (dragging == null) promptText(pt[0], pt[1]);
+                        if (dragging == null && tool == Tool.TEXT) promptText(pt[0], pt[1]);
                         return true;
                     }
                     if (tool == Tool.MOSAIC) {
@@ -940,8 +1079,15 @@ public class NativeCameraActivity extends AppCompatActivity {
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     if (dragging != null) {
-                        dragging.x = pt[0];
-                        dragging.y = pt[1];
+                        if (dragging instanceof TextOp) {
+                            TextOp t = (TextOp) dragging;
+                            t.x = pt[0];
+                            t.y = pt[1];
+                        } else if (dragging instanceof StickerOp) {
+                            StickerOp t = (StickerOp) dragging;
+                            t.x = pt[0];
+                            t.y = pt[1];
+                        }
                         invalidate();
                         return true;
                     }
