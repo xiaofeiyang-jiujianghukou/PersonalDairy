@@ -1,0 +1,491 @@
+/**
+ * 多端同步协议引擎(与宿主解耦:浏览器 / Node / 测试都能用)。
+ *
+ * 协议(按需求方的方案):
+ *   水位线 watermark = 本端已知的"最新更新时间点"(本地全部条目 updatedAt 的最大值,ISO 字符串可比大小)。
+ *
+ *   场景 1 —— 任一端写入:
+ *     写入端 notify(xxxa) 广播 → 各在线端比较自身 xxxb:
+ *       若 xxxb < xxxa → 定向 need(from=xxxb, to=xxxa) 给写入端;
+ *       写入端收到 need → 取本地 (xxxb, xxxa] 区间条目,分小批加密定向推送到云端;
+ *       请求端再从云端按游标拉取、解密、LWW 合并。
+ *
+ *   场景 2 —— 新端登录(已有端在线):
+ *     /hello 上报本端水位 → 云端返回各端水位 + 主端;
+ *     新端若落后 → 向水位更高的端(优先主端)发 need 请求区间补传。
+ *
+ *   场景 3 —— 多端同时上线(彼此水位不一):
+ *     每端 /hello 交换水位 → 服务端选举主端(水位最新优先,相同则登录最早);
+ *     各端统一向主端(或任何水位更高者)请求区间,最终向主端收敛。
+ *
+ * 引擎只处理"协议";加解密、存储、HTTP 都由宿主注入(见 SyncTransport / SyncStore / SyncCipher)。
+ */
+
+export interface DiaryEntry {
+  id: string;
+  date: string;
+  content: string;
+  deviceId?: string;
+  createdAt?: string;
+  updatedAt: string;
+  deletedAt?: string | null;
+}
+
+export interface PeerDevice {
+  deviceId: string;
+  /** 全局最新时间点(用于展示与主端选举)。 */
+  watermark: string;
+  /**
+   * 按"来源设备"的水位向量:{ 来源deviceId: 我拥有的该来源最新 updatedAt }。
+   * 只有向量才能发现"我缺了别人更早写的那批数据"(单标量水位会把旧数据当成对方已有)。
+   */
+  vector?: Record<string, string>;
+  loginAt: number;
+  lastSeen: number;
+  online?: boolean;
+}
+
+export type SyncKind = 'data' | 'notify' | 'need';
+
+/** 水位向量:来源设备 → 我拥有的该来源最新更新时间点。 */
+export type WatermarkVector = Record<string, string>;
+
+export interface SyncMessage {
+  id: number;
+  from: string;
+  kind: SyncKind;
+  to: string;
+  payload: string;
+}
+
+export interface SyncTransport {
+  hello(p: {
+    deviceId: string;
+    watermark: string;
+    vector: WatermarkVector;
+  }): Promise<{ leader: string | null; devices: PeerDevice[] }>;
+  heartbeat(p: {
+    deviceId: string;
+    watermark: string;
+    vector: WatermarkVector;
+  }): Promise<{ leader: string | null; devices: PeerDevice[] }>;
+  notify(p: { deviceId: string; watermark: string; vector: WatermarkVector }): Promise<void>;
+  /** 请求 origin 这台来源设备在 (fromWatermark, toWatermark] 区间内的数据。 */
+  need(p: {
+    deviceId: string;
+    to: string;
+    origin: string;
+    fromWatermark: string;
+    toWatermark: string;
+  }): Promise<void>;
+  /** 定向推送一批加密数据给 to。 */
+  push(p: { deviceId: string; to: string; payload: string }): Promise<void>;
+  pull(p: { deviceId: string; after: number; limit: number }): Promise<{ messages: SyncMessage[]; lastId: number }>;
+  wait(p: { deviceId: string; after: number }): Promise<{ hasNew: boolean }>;
+}
+
+export interface SyncStore {
+  all(): Promise<DiaryEntry[]>;
+  put(entries: DiaryEntry[]): Promise<void>;
+  exportMedia(ids: string[]): Promise<Array<{ id: string; dataUrl: string }>>;
+  importMedia(items: Array<{ id: string; dataUrl: string }>): Promise<void>;
+  localMediaIds(): Promise<string[]>;
+}
+
+export interface SyncCipher {
+  encrypt(obj: unknown): Promise<unknown>;
+  decrypt(obj: unknown): Promise<unknown>;
+}
+
+export interface SyncEngineOptions {
+  deviceId: string;
+  transport: SyncTransport;
+  store: SyncStore;
+  cipher: SyncCipher;
+  state: { getCursor(): number; setCursor(n: number): void };
+  /** 合并了对端条目后回调(用于刷新界面)。 */
+  onChange?: () => void;
+  /** 诊断日志。 */
+  log?: (msg: string) => void;
+  /** 单条推送的目标字节上限(超过则分批)。 */
+  chunkBytes?: number;
+  /** 每页拉取条数。 */
+  pageSize?: number;
+}
+
+/** 从 markdown 里抽出媒体引用 id(与 apps/web 的 extractMediaIds 行为一致的最小实现)。 */
+function mediaIdsOf(content: string): string[] {
+  const out: string[] = [];
+  const re = /diary-(?:img|video):([0-9a-fA-F]{8,})/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content ?? ''))) out.push(m[1]!);
+  return out;
+}
+
+export class SyncEngine {
+  private readonly o: Required<Pick<SyncEngineOptions, 'deviceId' | 'transport' | 'store' | 'cipher' | 'state'>> &
+    SyncEngineOptions;
+  /** 已广播过的水位(避免重复 notify 刷屏)。 */
+  private lastNotified = '';
+  /** 已请求过的 (target, theirWatermark),避免重复 need。 */
+  private readonly requested = new Set<string>();
+  private leader: string | null = null;
+  private busy = false;
+
+  constructor(opts: SyncEngineOptions) {
+    this.o = opts as never;
+  }
+
+  private log(msg: string): void {
+    this.o.log?.(`[sync:${this.o.deviceId.slice(0, 8)}] ${msg}`);
+  }
+
+  /** 本端水位线 = 本地全部条目 updatedAt 的最大值(删除也是更新,故含墓碑)。 */
+  async watermark(): Promise<string> {
+    const all = await this.o.store.all();
+    let wm = '';
+    for (const e of all) if (e.updatedAt && e.updatedAt > wm) wm = e.updatedAt;
+    return wm;
+  }
+
+  /** 水位向量:按来源设备分别记录"我有的最新时间点"。(条目自带 origin deviceId) */
+  async watermarkVector(): Promise<WatermarkVector> {
+    const all = await this.o.store.all();
+    const v: WatermarkVector = {};
+    for (const e of all) {
+      const origin = e.deviceId || 'unknown';
+      const u = String(e.updatedAt ?? '');
+      if (!u) continue;
+      if (!v[origin] || u > v[origin]) v[origin] = u;
+    }
+    return v;
+  }
+
+  getLeader(): string | null {
+    return this.leader;
+  }
+
+  // ---------------- 写入端:广播"我更新了" ----------------
+  async onLocalWrite(): Promise<void> {
+    const wm = await this.watermark();
+    if (!wm || wm === this.lastNotified) return;
+    this.lastNotified = wm;
+    try {
+      await this.o.transport.notify({
+        deviceId: this.o.deviceId,
+        watermark: wm,
+        vector: await this.watermarkVector(),
+      });
+      this.log(`notify 水位=${wm}`);
+    } catch (e) {
+      this.lastNotified = ''; // 失败允许重试
+      this.log(`notify 失败:${(e as Error).message}`);
+    }
+  }
+
+  // ---------------- 登录/上线:握手 + 按需补齐 ----------------
+  async onLogin(): Promise<{ requested: number; leader: string | null }> {
+    const wm = await this.watermark();
+    const vector = await this.watermarkVector();
+    let devices: PeerDevice[] = [];
+    try {
+      const r = await this.o.transport.hello({ deviceId: this.o.deviceId, watermark: wm, vector });
+      this.leader = r.leader;
+      devices = r.devices ?? [];
+    } catch (e) {
+      this.log(`hello 失败:${(e as Error).message}`);
+      return { requested: 0, leader: null };
+    }
+    this.log(
+      `hello 水位=${wm || '(空)'} 向量=${JSON.stringify(vector)} 主端=${this.leader?.slice(0, 8) ?? '无'}`,
+    );
+    const requested = await this.reconcileWith(devices, vector);
+    await this.drain(); // 顺带把云端已有消息拉净(兼容历史广播数据)
+    return { requested, leader: this.leader };
+  }
+
+  /**
+   * 与各端的水位向量比对:对每一个"来源设备",只要对方有而我没有(或对方更新),
+   * 就向该端请求 (我有, 他有] 区间。主端优先处理。
+   */
+  private async reconcileWith(devices: PeerDevice[], mine: WatermarkVector): Promise<number> {
+    const peers = devices
+      .filter((d) => d.deviceId !== this.o.deviceId)
+      .sort((a, b) => {
+        const al = a.deviceId === this.leader ? 1 : 0;
+        const bl = b.deviceId === this.leader ? 1 : 0;
+        if (al !== bl) return bl - al;
+        return a.deviceId < b.deviceId ? -1 : 1;
+      });
+    let n = 0;
+    for (const d of peers) {
+      const v = d.vector ?? {};
+      for (const [origin, their] of Object.entries(v)) {
+        const my = mine[origin] ?? '';
+        if (!their || their <= my) continue;
+        await this.requestRange(d.deviceId, origin, my, their);
+        n++;
+      }
+      // 对方没有向量(旧版本)时退化:按全局水位比较
+      if (!d.vector && d.watermark) {
+        let myMax = '';
+        for (const x of Object.values(mine)) if (x > myMax) myMax = x;
+        if (d.watermark > myMax) {
+          await this.requestRange(d.deviceId, '', myMax, d.watermark);
+          n++;
+        }
+      }
+    }
+    return n;
+  }
+
+  private async requestRange(to: string, origin: string, fromWm: string, toWm: string): Promise<void> {
+    const key = `${to}|${origin}|${toWm}`;
+    if (this.requested.has(key)) return;
+    this.requested.add(key);
+    try {
+      await this.o.transport.need({
+        deviceId: this.o.deviceId,
+        to,
+        origin,
+        fromWatermark: fromWm,
+        toWatermark: toWm,
+      });
+      this.log(`need ${to.slice(0, 8)} origin=${(origin || '(全部)').slice(0, 8)} 区间(${fromWm || '空'}, ${toWm}]`);
+    } catch (e) {
+      this.requested.delete(key);
+      this.log(`need 失败:${(e as Error).message}`);
+    }
+  }
+
+  // ---------------- 心跳(维持在线 + 刷新水位) ----------------
+  async heartbeat(): Promise<void> {
+    const wm = await this.watermark();
+    try {
+      const r = await this.o.transport.heartbeat({
+        deviceId: this.o.deviceId,
+        watermark: wm,
+        vector: await this.watermarkVector(),
+      });
+      this.leader = r.leader;
+    } catch {
+      /* 静默 */
+    }
+  }
+
+  // ---------------- 拉取并处理控制/数据消息 ----------------
+  /** 把云端消息拉到本地(分页),处理 data/notify/need。返回合并条数。 */
+  async drain(): Promise<{ merged: number }> {
+    const pageSize = this.o.pageSize ?? 15;
+    let cursor = this.o.state.getCursor();
+    let merged = 0;
+    for (let guard = 0; guard < 500; guard++) {
+      let page: { messages: SyncMessage[]; lastId: number };
+      try {
+        page = await this.o.transport.pull({ deviceId: this.o.deviceId, after: cursor, limit: pageSize });
+      } catch (e) {
+        this.log(`pull 失败:${(e as Error).message}`);
+        break;
+      }
+      const msgs = page.messages ?? [];
+      if (!msgs.length) break;
+      let pageMax = cursor;
+      for (const m of msgs) {
+        if (m.id > pageMax) pageMax = m.id;
+        try {
+          merged += await this.handle(m);
+        } catch (e) {
+          this.log(`处理消息 ${m.id}(${m.kind})出错:${(e as Error).message}`);
+        }
+      }
+      cursor = Math.max(pageMax, page.lastId);
+      this.o.state.setCursor(cursor);
+      if (msgs.length < pageSize) break;
+    }
+    if (merged > 0) this.o.onChange?.();
+    return { merged };
+  }
+
+  private async handle(m: SyncMessage): Promise<number> {
+    if (m.kind === 'notify') {
+      // 对端说"我更新到 xxxa":只要它更新的那批是我没有的,就定向索取
+      const info = await this.safeDecrypt<{ watermark?: string; vector?: WatermarkVector }>(m.payload).catch(() => null);
+      const their = String(info?.watermark ?? '');
+      const mine = await this.watermarkVector();
+      const origin = info?.vector ? Object.keys(info.vector)[0] ?? m.from : m.from;
+      const theirOrigin = String(info?.vector?.[origin] ?? their);
+      const myOrigin = mine[origin] ?? '';
+      if (theirOrigin && theirOrigin > myOrigin) {
+        await this.requestRange(m.from, origin, myOrigin, theirOrigin);
+      } else if (their && their > (mine[m.from] ?? '')) {
+        await this.requestRange(m.from, m.from, mine[m.from] ?? '', their);
+      }
+      return 0;
+    }
+    if (m.kind === 'need') {
+      // 对端要我补 origin 这台设备在 (fromWatermark, toWatermark] 的数据
+      const req =
+        (await this.safeDecrypt<{ origin?: string; fromWatermark?: string; toWatermark?: string }>(m.payload)) ?? {};
+      await this.serveRange(
+        m.from,
+        String(req.origin ?? ''),
+        String(req.fromWatermark ?? ''),
+        String(req.toWatermark ?? ''),
+      );
+      return 0;
+    }
+    // data
+    const peer = await this.decryptData<{
+      entries?: DiaryEntry[];
+      images?: Array<{ id: string; dataUrl: string }>;
+    }>(m.payload);
+    if (!peer) return 0; // 解不开(旧密钥/别人的)→ 跳过,不阻塞
+    for (const img of peer.images ?? []) {
+      if (img?.dataUrl) await this.o.store.importMedia([img]);
+    }
+    const merged = await this.mergeEntries(peer.entries ?? []);
+    if (merged && this.lastNotified) {
+      const wm = await this.watermark();
+      if (wm > this.lastNotified) this.lastNotified = wm; // 合并后水位前进,避免再广播一次
+    }
+    return merged;
+  }
+
+  /** LWW 合并:本地缺失,或对端 updatedAt 更新 → 写入。 */
+  async mergeEntries(remote: DiaryEntry[]): Promise<number> {
+    if (!remote.length) return 0;
+    const local = await this.o.store.all();
+    const map = new Map(local.map((e) => [e.id, e]));
+    const toWrite: DiaryEntry[] = [];
+    for (const e of remote) {
+      if (!e?.id || !e.date) continue;
+      const cur = map.get(e.id);
+      if (!cur || String(e.updatedAt ?? '') > String(cur.updatedAt ?? '')) toWrite.push(e);
+    }
+    if (toWrite.length) await this.o.store.put(toWrite);
+    return toWrite.length;
+  }
+
+  // ---------------- 被请求端:补传区间数据 ----------------
+  /** 把本地 origin 来源、时间落在 (fromWm, toWm] 的条目分小批加密定向推给 requester。 */
+  async serveRange(requester: string, origin: string, fromWm: string, toWm: string): Promise<number> {
+    const all = await this.o.store.all();
+    const picked = all
+      .filter((e) => {
+        if (origin && (e.deviceId || 'unknown') !== origin) return false;
+        const u = String(e.updatedAt ?? '');
+        if (!u) return false;
+        if (fromWm && u <= fromWm) return false;
+        if (toWm && u > toWm) return false;
+        return true;
+      })
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : 1));
+    if (!picked.length) {
+      this.log(`serve ${requester.slice(0, 8)} 区间无数据`);
+      return 0;
+    }
+    const localImageIds = await this.o.store.localMediaIds();
+    const max = this.o.chunkBytes ?? 192 * 1024;
+    let batch: DiaryEntry[] = [];
+    let size = 0;
+    let sent = 0;
+    const flush = async (): Promise<void> => {
+      if (!batch.length) return;
+      const ids = new Set<string>();
+      for (const e of batch) for (const id of mediaIdsOf(e.content)) ids.add(id);
+      const images = ids.size ? await this.o.store.exportMedia([...ids]) : [];
+      const enc = await this.o.cipher.encrypt({ entries: batch, images, localImageIds });
+      await this.o.transport.push({ deviceId: this.o.deviceId, to: requester, payload: JSON.stringify(enc) });
+      sent += batch.length;
+      batch = [];
+      size = 0;
+    };
+    for (const e of picked) {
+      const ids = mediaIdsOf(e.content);
+      const imgs = ids.length ? await this.o.store.exportMedia(ids) : [];
+      const esize = JSON.stringify(e).length + imgs.reduce((s, x) => s + x.dataUrl.length, 0);
+      if (batch.length && size + esize > max) await flush();
+      batch.push(e);
+      size += esize;
+    }
+    await flush();
+    this.log(
+      `serve ${requester.slice(0, 8)} origin=${(origin || '(全部)').slice(0, 8)} 区间(${fromWm || '空'}, ${toWm}] 推送 ${sent} 条`,
+    );
+    return sent;
+  }
+
+  /**
+   * 控制消息载荷解析:优先按加密解;解不开再当作明文 JSON(服务端兜底生成的元数据)。
+   * 数据消息必须能解密,控制消息两者皆可。
+   */
+  private async safeDecrypt<T>(payload: string): Promise<T | null> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      return null;
+    }
+    try {
+      return (await this.o.cipher.decrypt(parsed)) as T;
+    } catch {
+      /* 不是密文 → 尝试明文 */
+    }
+    const p = parsed as { plain?: T } & T;
+    if (p && typeof p === 'object') return (p.plain ?? p) as T;
+    return null;
+  }
+
+  /** 数据消息:只接受能解密的(解不开说明密钥不同/旧消息,跳过)。 */
+  private async decryptData<T>(payload: string): Promise<T | null> {
+    try {
+      const parsed = JSON.parse(payload);
+      return (await this.o.cipher.decrypt(parsed)) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  // ---------------- 在线常驻循环 ----------------
+  /**
+   * 一次完整同步:握手(按需)→ 拉净云端 → 广播水位。
+   * 长轮询循环由宿主驱动(见 runLoop)。
+   */
+  async runOnce(): Promise<{ pushed: number; pulled: number }> {
+    if (this.busy) return { pushed: 0, pulled: 0 };
+    this.busy = true;
+    try {
+      await this.onLogin();
+      const { merged } = await this.drain();
+      const pushed = await this.serveNote();
+      return { pushed, pulled: merged };
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /** 兜底:本地若有未广播过的更新,补一次 notify。 */
+  private async serveNote(): Promise<number> {
+    const wm = await this.watermark();
+    if (wm && wm !== this.lastNotified) {
+      await this.onLocalWrite();
+      return 1;
+    }
+    return 0;
+  }
+
+  /** 长轮询等待 → 有变化就拉取处理;返回是否处理了消息。 */
+  async waitAndPull(timeoutMs = 25000): Promise<boolean> {
+    const cursor = this.o.state.getCursor();
+    let hasNew = false;
+    try {
+      const r = await this.o.transport.wait({ deviceId: this.o.deviceId, after: cursor });
+      hasNew = Boolean(r?.hasNew);
+    } catch {
+      return false;
+    }
+    if (!hasNew) return false;
+    const { merged } = await this.drain();
+    return merged > 0 || hasNew;
+  }
+}

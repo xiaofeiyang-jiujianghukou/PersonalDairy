@@ -10,7 +10,8 @@
     "test:bundle": "tsx scripts/test-bundle.ts",
     "test:companion": "tsx scripts/test-companion.ts",
     "test:media": "tsx scripts/test-media.ts",
-    "test:mail": "tsx scripts/test-mail.ts"
+    "test:mail": "tsx scripts/test-mail.ts",
+    "test:sync": "tsx scripts/test-sync-protocol.ts"
   },
   "dependencies": {
     "@diary/shared": "workspace:*",

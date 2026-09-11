@@ -10,7 +10,8 @@
     "./sync": "./src/sync.ts",
     "./images": "./src/images.ts",
     "./syncCrypto": "./src/syncCrypto.ts",
-    "./bundle": "./src/bundle.ts"
+    "./bundle": "./src/bundle.ts",
+    "./syncEngine": "./src/syncEngine.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

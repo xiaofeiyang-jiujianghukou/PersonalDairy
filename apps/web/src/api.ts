@@ -10,6 +10,7 @@ import { reconcileFull } from '@diary/shared/sync';
 import { extractMediaIds } from '@diary/shared/images';
 import { decryptObject, deriveSyncKey, encryptObject } from '@diary/shared/syncCrypto';
 import { emitDataChanged } from './lib/dataEvents';
+import { SyncEngine, type SyncStore, type SyncTransport, type DiaryEntry as EngineEntry } from '@diary/shared/syncEngine';
 import { IdbBackend, createLocalApi, listImageIds, type LocalBackend } from './lib/localStore';
 import { exportMediaFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
 import { getFetch } from './lib/net';
@@ -476,119 +477,123 @@ function getDeviceId(): string {
   }
 }
 
+// ---------------- 同步协议引擎装配(水位线协商 + 区间补传 + 主端选举) ----------------
+// 协议实现见 packages/shared/src/syncEngine.ts;这里只负责把它接到 HTTP / 本地库 / 加解密。
+function requireSyncKey(): string {
+  const k = getSyncKey();
+  if (!k) throw new Error('尚未配对(无同步密钥)');
+  return k;
+}
+
+function makeEngineTransport(deviceId: string): SyncTransport {
+  return {
+    hello: (p) =>
+      http<{ leader: string | null; devices: [] }>('/api/relay/hello', {
+        method: 'POST',
+        body: JSON.stringify({ from: deviceId, watermark: p.watermark, vector: p.vector }),
+      }),
+    heartbeat: (p) =>
+      http<{ leader: string | null; devices: [] }>('/api/relay/heartbeat', {
+        method: 'POST',
+        body: JSON.stringify({ from: deviceId, watermark: p.watermark, vector: p.vector }),
+      }),
+    notify: async (p) => {
+      const payload = JSON.stringify(await encryptObject(requireSyncKey(), { watermark: p.watermark, vector: p.vector }));
+      await http('/api/relay/notify', {
+        method: 'POST',
+        body: JSON.stringify({ from: deviceId, watermark: p.watermark, vector: p.vector, payload }),
+      });
+    },
+    need: async (p) => {
+      const payload = JSON.stringify(
+        await encryptObject(requireSyncKey(), {
+          origin: p.origin,
+          fromWatermark: p.fromWatermark,
+          toWatermark: p.toWatermark,
+        }),
+      );
+      await http('/api/relay/need', {
+        method: 'POST',
+        body: JSON.stringify({
+          from: deviceId,
+          to: p.to,
+          origin: p.origin,
+          fromWatermark: p.fromWatermark,
+          toWatermark: p.toWatermark,
+          payload,
+        }),
+      });
+    },
+    push: async (p) => {
+      await http('/api/relay/push', {
+        method: 'POST',
+        body: JSON.stringify({ from: deviceId, to: p.to, payload: p.payload, kind: 'data' }),
+      });
+    },
+    pull: (p) =>
+      http<{ messages: []; lastId: number }>(
+        `/api/relay/pull?from=${encodeURIComponent(deviceId)}&after=${p.after}&limit=${p.limit}`,
+      ),
+    wait: (p) =>
+      http<{ hasNew: boolean }>('/api/relay/wait', {
+        method: 'POST',
+        body: JSON.stringify({ from: deviceId, after: p.after }),
+      }),
+  };
+}
+
+function makeEngineStore(): SyncStore {
+  return {
+    all: async () => (await getLocalBackend().getAll()) as unknown as EngineEntry[],
+    put: async (es) => {
+      await getLocalBackend().put(es as never);
+    },
+    exportMedia: (ids) => exportMediaFor(ids),
+    importMedia: async (items) => {
+      for (const it of items) if (it?.dataUrl) await importImageDataUrl(it.dataUrl);
+    },
+    localMediaIds: () => listImageIds(),
+  };
+}
+
+let syncEngine: SyncEngine | null = null;
+/** 取得(单例)同步引擎。 */
+export function getSyncEngine(): SyncEngine {
+  if (syncEngine) return syncEngine;
+  const deviceId = getDeviceId();
+  syncEngine = new SyncEngine({
+    deviceId,
+    transport: makeEngineTransport(deviceId),
+    store: makeEngineStore(),
+    cipher: {
+      encrypt: (o) => encryptObject(requireSyncKey(), o),
+      decrypt: (o) => decryptObject(requireSyncKey(), o as never),
+    },
+    state: { getCursor: () => getRelayCursor(), setCursor: (n) => setRelayCursor(n) },
+    onChange: () => emitDataChanged(),
+    log: (m) => {
+      if (localStorage.getItem('diary.debugSync') === '1') console.log(m);
+    },
+  });
+  return syncEngine;
+}
+
 /**
  * 继电器同步(P2,跨网络):把加密增量推到中继,并取走对端推送的,解密后 LWW 合并。
  * 不依赖 P2P 可达性;只要客户端能访问服务端(/api/relay)即可。
  */
 export async function relaySyncNow(): Promise<{ pushed: number; pulled: number }> {
-  const syncKey = getSyncKey();
-  if (!syncKey) throw new Error('尚未配对(无同步密钥)');
-  const since = getLastSyncAt();
-  const ours = await getLocalBackend().getAll();
-  const delta = ours.filter((e) => !since || e.updatedAt > since);
-  const deltaImgIds = new Set<string>();
-  for (const e of delta) for (const id of extractMediaIds(e.content)) deltaImgIds.add(id);
-  const pushImages = await exportMediaFor([...deltaImgIds]);
-  const localImageIds = await listImageIds();
-  const deviceId = getDeviceId();
-
-  // 分批推送:避免单条 POST 太大(或 nginx/client 限制)被中断。每批估算 < 192KB。
-  const MAX = 192 * 1024;
-  const imgMap = new Map(pushImages.map((i) => [i.id, i]));
-  const chunks: Array<{ entries: Entry[]; images: Array<{ id: string; dataUrl: string }> }> = [];
-  let curEntries: Entry[] = [];
-  let curImages = new Map<string, { id: string; dataUrl: string }>();
-  let curSize = 0;
-  for (const e of delta) {
-    const ids = extractMediaIds(e.content);
-    const imgs = ids.map((id) => imgMap.get(id)).filter((x): x is { id: string; dataUrl: string } => Boolean(x));
-    const eSize = JSON.stringify(e).length + imgs.reduce((s, x) => s + x.dataUrl.length, 0);
-    if (curEntries.length && curSize + eSize > MAX) {
-      chunks.push({ entries: curEntries, images: [...curImages.values()] });
-      curEntries = [];
-      curImages = new Map();
-      curSize = 0;
-    }
-    curEntries.push(e);
-    curSize += JSON.stringify(e).length;
-    for (const x of imgs) {
-      if (!curImages.has(x.id)) {
-        curImages.set(x.id, x);
-        curSize += x.dataUrl.length;
-      }
-    }
-  }
-  if (curEntries.length) chunks.push({ entries: curEntries, images: [...curImages.values()] });
-
-  let pushed = 0;
-  for (const chunk of chunks) {
-    const payload = { since, entries: chunk.entries, images: chunk.images, localImageIds };
-    const enc = await encryptObject(syncKey, payload);
-    await http<{ ok: boolean }>('/api/relay/push', {
-      method: 'POST',
-      body: JSON.stringify({ from: deviceId, payload: JSON.stringify(enc) }),
-    });
-    pushed += chunk.entries.length;
-  }
-
-  const { pulled } = await relayPullOnly();
-  return { pushed, pulled };
+  // 走新协议:握手(按需向各端索取区间)→ 拉净云端 → 广播本端水位
+  return getSyncEngine().runOnce();
 }
 
 /**
- * 只拉取对端新消息(游标 after 之后)并合并到本地,不推送。
- * 供"在线常驻"循环调用 —— 避免每次轮询都推送空增量导致中继膨胀。
+ * 只拉取云端消息并合并到本地(不推送)。供"在线常驻"循环调用。
+ * 会顺带处理控制消息:对端的"我更新了"→ 按需索取区间;对端的"请补传"→ 推送数据。
  */
 export async function relayPullOnly(): Promise<{ pulled: number }> {
-  const syncKey = getSyncKey();
-  if (!syncKey) throw new Error('尚未配对(无同步密钥)');
-  const deviceId = getDeviceId();
-  const pageSize = 15;
-  let cursor = getRelayCursor();
-  let pulled = 0;
-  // 分批拉取:一次只取一页(限制条数),避免一次拉全量(中继可能积大量含图消息)导致响应过大/超时。
-  // 每页合并后推进游标,直到取完。这样即使之前错过的消息也能随后补上。
-  for (let guard = 0; guard < 300; guard++) {
-    const pull = await http<{ messages: Array<{ id: number; from: string; payload: string }>; lastId: number }>(
-      `/api/relay/pull?from=${encodeURIComponent(deviceId)}&after=${cursor}&limit=${pageSize}`,
-    );
-    const msgs = pull.messages ?? [];
-    if (!msgs.length) break;
-    // 拉取后刷新一下本地(便于合并最新)
-    const freshOurs = await getLocalBackend().getAll();
-    let pageMax = cursor;
-    for (const m of msgs) {
-      if (m.id > pageMax) pageMax = m.id;
-      // 有的中继消息可能是旧密钥(< 本次派生/迁移前)留的,解不开不应阻塞整页/全量拉取 → 跳过。
-      let peer: { entries: Entry[]; images?: Array<{ id: string; dataUrl: string }> };
-      try {
-        peer = await decryptObject<{ entries: Entry[]; images?: Array<{ id: string; dataUrl: string }> }>(
-          syncKey,
-          JSON.parse(m.payload),
-        );
-      } catch {
-        continue;
-      }
-      for (const img of peer.images ?? []) if (img?.dataUrl) await importImageDataUrl(img.dataUrl);
-      const reconciled = reconcileFull(freshOurs, peer.entries ?? []);
-      const localMap = new Map(freshOurs.map((e) => [e.id, e]));
-      const toWrite: Entry[] = [];
-      for (const e of reconciled) {
-        const cur = localMap.get(e.id);
-        if (!cur || e.updatedAt > cur.updatedAt) toWrite.push(e);
-      }
-      if (toWrite.length) {
-        await getLocalBackend().put(toWrite);
-        pulled += toWrite.length;
-      }
-    }
-    cursor = Math.max(pageMax, pull.lastId);
-    setRelayCursor(cursor);
-    if (msgs.length < pageSize) break; // 不足一页 = 已拉完
-  }
-  setLastSyncAt(new Date().toISOString());
-  if (pulled > 0) emitDataChanged(); // 合并了对端条目 → 通知界面刷新
-  return { pulled };
+  const { merged } = await getSyncEngine().drain();
+  return { pulled: merged };
 }
 
 /**

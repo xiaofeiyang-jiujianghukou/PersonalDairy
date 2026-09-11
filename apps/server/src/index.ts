@@ -48,7 +48,19 @@ import {
   deleteSession,
   deleteSessionsForUser,
 } from './db.js';
-import { initRelayRedis, relayHasNew, relayPull, relayPush, relayReportCursor } from './relayRedis.js';
+import {
+  initRelayRedis,
+  relayHasNew,
+  relayPull,
+  relayPush,
+  relayReportCursor,
+  deviceRegister,
+  deviceTouch,
+  deviceList,
+  pickLeader,
+  type DeviceInfo,
+  type RelayKind,
+} from './relayRedis.js';
 import { getTextProvider, getVisionProvider } from './ai/index.js';
 import { summarizeMonth } from './ai/summary.js';
 import { chatWithDiary, type CompanionMessage } from './ai/companion.js';
@@ -351,12 +363,14 @@ interface RelayWaiter {
 }
 const relayWaiters = new Map<number, Set<RelayWaiter>>();
 
-function wakeRelayWaiters(userId: number, fromDevice: string): void {
+function wakeRelayWaiters(userId: number, fromDevice: string, toDevice = ''): void {
   const set = relayWaiters.get(userId);
   if (!set) return;
   for (const w of Array.from(set)) {
     // 新消息来自别人 → 能立刻拉到,唤醒;来自自己则不动(避免自我唤醒的空拉)
-    if (fromDevice !== w.from) w.finish(true);
+    if (fromDevice === w.from) continue;
+    if (toDevice && toDevice !== w.from) continue; // 定向消息只唤醒目标端
+    w.finish(true);
   }
 }
 
@@ -389,12 +403,18 @@ function relayWaitOnce(userId: number, from: string, after: number): Promise<{ h
 
 app.post('/api/relay/push', async (req, reply) => {
   const user = (req as AuthedRequest).user!;
-  const { from, payload } = (req.body ?? {}) as { from?: string; payload?: string };
+  const { from, payload, kind, to } = (req.body ?? {}) as {
+    from?: string;
+    payload?: string;
+    kind?: RelayKind;
+    to?: string;
+  };
   if (typeof from !== 'string' || typeof payload !== 'string' || payload.length > 64 * 1024 * 1024) {
     return reply.code(400).send({ error: '无效的载荷' });
   }
-  await relayPush(user.id, from, payload);
-  wakeRelayWaiters(user.id, from); // 实时唤醒(本进程内存)
+  const k: RelayKind = kind === 'notify' || kind === 'need' ? kind : 'data';
+  await relayPush(user.id, from, payload, k, typeof to === 'string' ? to : '');
+  wakeRelayWaiters(user.id, from, to); // 实时唤醒(本进程内存)
   return { ok: true };
 });
 
@@ -427,6 +447,105 @@ app.post('/api/relay/cursor', async (req) => {
   return { ok: true };
 });
 
+
+// ---------- 同步控制面:设备注册 / 水位线协商 / 主端选举 ----------
+// 设计(按用户方案):
+//   1) 任一端写入 → notify(带上自己最新水位 xxxa)广播给在线端;
+//      对端比较自身水位 xxxb:若落后 → 向该端发 need(from=xxxb,to=xxxa) 定向请求;
+//      被请求端把 (xxxb, xxxa] 区间的数据分小批定向推到云端;请求端再从云端拉取合并。
+//   2) 新端登录 → /hello 拿到全部端的水位与主端:落后则向水位更高的端(优先主端)发 need。
+//   3) 多端同时上线 → 每端 /hello 交换水位 → 选举主端(水位最新优先,其次登录最早),
+//      各端统一向主端(或其水位更高者)补齐。
+const ONLINE_MS = 90 * 1000;
+
+function withLeader(devices: DeviceInfo[]): { leader: string | null; devices: DeviceInfo[] } {
+  return {
+    leader: pickLeader(devices),
+    devices: devices.map((d) => ({ ...d, online: Date.now() - d.lastSeen <= ONLINE_MS })),
+  };
+}
+
+/** 登录/冷启动握手:登记本端水位与登录时刻,返回其它端水位 + 主端。 */
+app.post('/api/relay/hello', async (req, reply) => {
+  const user = (req as AuthedRequest).user!;
+  const { from, watermark, vector } = (req.body ?? {}) as {
+    from?: string;
+    watermark?: string;
+    vector?: Record<string, string>;
+  };
+  if (typeof from !== 'string' || !from) return reply.code(400).send({ error: '缺少 from' });
+  const devices = await deviceRegister(user.id, from, String(watermark ?? ''), true, vector ?? {});
+  return withLeader(devices);
+});
+
+/** 心跳:定期上报水位(幂等,不改 loginAt),顺带拿回最新设备表与主端。 */
+app.post('/api/relay/heartbeat', async (req, reply) => {
+  const user = (req as AuthedRequest).user!;
+  const { from, watermark, vector } = (req.body ?? {}) as {
+    from?: string;
+    watermark?: string;
+    vector?: Record<string, string>;
+  };
+  if (typeof from !== 'string' || !from) return reply.code(400).send({ error: '缺少 from' });
+  const devices = await deviceTouch(user.id, from, String(watermark ?? ''), vector ?? {});
+  return withLeader(devices);
+});
+
+/** 设备表 + 当前主端(不改变任何状态)。 */
+app.get('/api/relay/devices', async (req) => {
+  const user = (req as AuthedRequest).user!;
+  return withLeader(await deviceList(user.id));
+});
+
+/** 我更新了(广播,携带新水位 xxxa)。仅元数据,不含日记内容。 */
+app.post('/api/relay/notify', async (req, reply) => {
+  const user = (req as AuthedRequest).user!;
+  const { from, watermark, payload, vector } = (req.body ?? {}) as {
+    from?: string;
+    watermark?: string;
+    payload?: string;
+    vector?: Record<string, string>;
+  };
+  if (typeof from !== 'string' || !from) return reply.code(400).send({ error: '缺少 from' });
+  await deviceTouch(user.id, from, String(watermark ?? ''), vector ?? {});
+  const body = typeof payload === 'string' && payload ? payload : JSON.stringify({ plain: { watermark } });
+  await relayPush(user.id, from, body, 'notify', '');
+  wakeRelayWaiters(user.id, from, '');
+  return { ok: true };
+});
+
+/** 请把 (fromWatermark, toWatermark] 的数据推给我(定向)。仅元数据,不含日记内容。 */
+app.post('/api/relay/need', async (req, reply) => {
+  const user = (req as AuthedRequest).user!;
+  const { from, to, origin, fromWatermark, toWatermark, payload } = (req.body ?? {}) as {
+    from?: string;
+    to?: string;
+    origin?: string;
+    fromWatermark?: string;
+    toWatermark?: string;
+    payload?: string;
+  };
+  if (typeof from !== 'string' || typeof to !== 'string' || !from || !to) {
+    return reply.code(400).send({ error: '缺少 from/to' });
+  }
+  const senders = await deviceList(user.id);
+  const target = senders.find((d) => d.deviceId === to);
+  // 只有"水位确实到达 toWatermark"的端才需要响应(防止对端自己也没数据却空推)
+  const reachable = Boolean(target && String(target.watermark ?? '') >= String(toWatermark ?? ''));
+  const needBody =
+    typeof payload === 'string' && payload
+      ? payload
+      : JSON.stringify({
+          plain: {
+            origin: String(origin ?? ''),
+            fromWatermark: String(fromWatermark ?? ''),
+            toWatermark: String(toWatermark ?? ''),
+          },
+        });
+  await relayPush(user.id, from, needBody, 'need', to);
+  wakeRelayWaiters(user.id, from, to);
+  return { ok: true, reachable };
+});
 
 // 会话保护:除 健康/鉴权/扫码 外,所有 /api 需 Bearer 登录
 const OPEN_PREFIXES = ['/api/health', '/api/auth', '/api/qr'];
