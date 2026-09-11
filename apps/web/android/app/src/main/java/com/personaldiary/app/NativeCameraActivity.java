@@ -2,6 +2,7 @@ package com.personaldiary.app;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
@@ -11,10 +12,12 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.InputType;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -22,7 +25,9 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
+import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -60,20 +65,33 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * 原生相机(CameraX)+ 微信式编辑页。
- * 拍照阶段:实时预览(原生方向/比例,铺满)、点按对焦、轻触拍照、长按摄像、
+ *
+ * 拍照阶段:预览(原生方向/比例,铺满)、点按对焦、轻触拍照、长按摄像、
  *          ⚡ 启用/禁用拍照闪光灯、⟳ 前后置、左上角 ✕
- * 编辑阶段:取消 / 涂鸦 / 撤回 / 前进 / 完成(涂鸦直接合成进照片)
- * 结果以文件路径 + mime 返回给插件。
+ *          图标全部用矢量(纯白)绘制 —— emoji 字符会被系统渲染成彩色,不能用。
+ * 编辑阶段:涂鸦 / 文字 / 马赛克 / 裁剪 + 撤回 / 前进 + 取消 / 完成
  */
 public class NativeCameraActivity extends AppCompatActivity {
 
     public static final String EXTRA_PATH = "path";
     public static final String EXTRA_MIME = "mime";
 
+    private static final int WHITE = Color.WHITE;
+
+    private static int dp(float v, android.content.Context ctx) {
+        return Math.round(TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP, v, ctx.getResources().getDisplayMetrics()));
+    }
+
+    private int dp(float v) {
+        return dp(v, this);
+    }
+
+    // ---------------- 拍照阶段 ----------------
     private FrameLayout root;
     private PreviewView previewView;
     private TextView hintView;
-    private TextView torchIcon;
+    private ImageView flashBtn;
     private View shutterInner;
     private View focusRing;
 
@@ -91,34 +109,17 @@ public class NativeCameraActivity extends AppCompatActivity {
     private Runnable tickRunnable;
     private int seconds = 0;
 
-    // 编辑页
-    private Bitmap photoBitmap;
+    // ---------------- 编辑阶段 ----------------
+    private enum Tool { DRAW, TEXT, MOSAIC }
+
+    private Bitmap base;          // 当前底图(裁剪/旋转后)
+    private Bitmap pixelated;     // 马赛克用的低清底图
     private File pendingFile;
-    private DrawView drawView;
-    private TextView drawBtn;
-    private TextView undoBtn;
-    private TextView redoBtn;
-    private boolean drawMode = true;
-
-    private int dp(float v) {
-        return Math.round(TypedValue.applyDimension(
-                TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics()));
-    }
-
-    private android.graphics.drawable.GradientDrawable circle(int color) {
-        android.graphics.drawable.GradientDrawable d = new android.graphics.drawable.GradientDrawable();
-        d.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-        d.setColor(color);
-        return d;
-    }
-
-    private android.graphics.drawable.GradientDrawable ringDrawable(int strokeDp, int color) {
-        android.graphics.drawable.GradientDrawable d = new android.graphics.drawable.GradientDrawable();
-        d.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-        d.setColor(Color.TRANSPARENT);
-        d.setStroke(dp(strokeDp), color);
-        return d;
-    }
+    private EditorView editorView;
+    private final List<Op> ops = new ArrayList<>();
+    private final List<Op> redoOps = new ArrayList<>();
+    private Tool tool = Tool.DRAW;
+    private ImageView drawBtn, textBtn, mosaicBtn, cropBtn, undoBtn, redoBtn;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -129,6 +130,20 @@ public class NativeCameraActivity extends AppCompatActivity {
         w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         buildCameraUi();
         startCamera();
+    }
+
+    private ImageView icon(int resId) {
+        ImageView v = new ImageView(this);
+        v.setImageResource(resId);
+        v.setColorFilter(WHITE);
+        return v;
+    }
+
+    private void circleBg(View v, int sizeDp, int color) {
+        android.graphics.drawable.GradientDrawable d = new android.graphics.drawable.GradientDrawable();
+        d.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        d.setColor(color);
+        v.setBackground(d);
     }
 
     // ==================== 拍照阶段 UI ====================
@@ -144,27 +159,27 @@ public class NativeCameraActivity extends AppCompatActivity {
 
         // 对焦圈
         focusRing = new View(this);
-        focusRing.setBackground(ringDrawable(2, 0xFFFFFFFF));
+        android.graphics.drawable.GradientDrawable ring = new android.graphics.drawable.GradientDrawable();
+        ring.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        ring.setColor(Color.TRANSPARENT);
+        ring.setStroke(dp(2), WHITE);
+        focusRing.setBackground(ring);
         focusRing.setAlpha(0f);
-        FrameLayout.LayoutParams frLp = new FrameLayout.LayoutParams(dp(72), dp(72));
-        focusRing.setLayoutParams(frLp);
+        focusRing.setLayoutParams(new FrameLayout.LayoutParams(dp(72), dp(72)));
         root.addView(focusRing);
 
-        // 左上角 ✕(纯白半透明,无底板,不挡画面)
-        TextView close = new TextView(this);
-        close.setText("✕");
-        close.setTextColor(0xB3FFFFFF);
-        close.setTextSize(26);
-        close.setGravity(Gravity.CENTER);
-        close.setShadowLayer(6f, 0f, 1f, Color.BLACK);
-        FrameLayout.LayoutParams closeLp = new FrameLayout.LayoutParams(dp(56), dp(56));
+        // 左上角 ✕(矢量,纯白半透明)
+        ImageView close = icon(R.drawable.ic_close);
+        close.setAlpha(0.75f);
+        FrameLayout.LayoutParams closeLp = new FrameLayout.LayoutParams(dp(52), dp(52));
         closeLp.gravity = Gravity.TOP | Gravity.START;
         closeLp.topMargin = dp(16);
-        closeLp.leftMargin = dp(6);
+        closeLp.leftMargin = dp(8);
+        close.setPadding(dp(14), dp(14), dp(14), dp(14));
         close.setOnClickListener(v -> cancel());
         root.addView(close, closeLp);
 
-        // 右上角:极淡的版本号(方便确认当前装的是哪一版)
+        // 右上角版本号(极淡)
         TextView verTag = new TextView(this);
         String vn = "?";
         try {
@@ -174,7 +189,6 @@ public class NativeCameraActivity extends AppCompatActivity {
         verTag.setText("v" + vn);
         verTag.setTextColor(0x59FFFFFF);
         verTag.setTextSize(12);
-        verTag.setShadowLayer(4f, 0f, 1f, Color.BLACK);
         FrameLayout.LayoutParams verLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         verLp.gravity = Gravity.TOP | Gravity.END;
@@ -182,6 +196,7 @@ public class NativeCameraActivity extends AppCompatActivity {
         verLp.rightMargin = dp(14);
         root.addView(verTag, verLp);
 
+        // 底部:提示 + 控制行(⚡ 贴左、快门居中、⟳ 贴右 —— 与微信一致)
         LinearLayout bottom = new LinearLayout(this);
         bottom.setOrientation(LinearLayout.VERTICAL);
         bottom.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -191,74 +206,67 @@ public class NativeCameraActivity extends AppCompatActivity {
         hintView.setTextColor(0xEBFFFFFF);
         hintView.setTextSize(14);
         hintView.setShadowLayer(6f, 0f, 1f, Color.BLACK);
-        hintView.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        hintLp.bottomMargin = dp(18);
+        hintLp.bottomMargin = dp(20);
         bottom.addView(hintView, hintLp);
 
-        LinearLayout controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.HORIZONTAL);
-        controls.setGravity(Gravity.CENTER_VERTICAL);
+        FrameLayout controls = new FrameLayout(this);
+        controls.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(96)));
 
-        // ⚡ 闪光灯:纯白,开/关用"划线"区分(不用颜色高亮)
-        torchIcon = new TextView(this);
-        torchIcon.setText("⚡");
-        torchIcon.setTextSize(24);
-        torchIcon.setTextColor(Color.WHITE);
-        torchIcon.setGravity(Gravity.CENTER);
-        torchIcon.setShadowLayer(6f, 0f, 1f, Color.BLACK);
-        torchIcon.setOnClickListener(v -> toggleFlash());
-        LinearLayout.LayoutParams sideLp = new LinearLayout.LayoutParams(dp(52), dp(52));
-        controls.addView(torchIcon, sideLp);
-
-        // 快门:环和内圆都居中(之前环漏了 gravity,才会歪成月牙)
+        // 快门(居中):环 + 内圆,都居中
         FrameLayout shutter = new FrameLayout(this);
         View shutterRing = new View(this);
-        shutterRing.setBackground(ringDrawable(4, Color.WHITE));
-        FrameLayout.LayoutParams ringLp = new FrameLayout.LayoutParams(dp(78), dp(78));
+        android.graphics.drawable.GradientDrawable sr = new android.graphics.drawable.GradientDrawable();
+        sr.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        sr.setColor(Color.TRANSPARENT);
+        sr.setStroke(dp(3), WHITE);
+        shutterRing.setBackground(sr);
+        FrameLayout.LayoutParams ringLp = new FrameLayout.LayoutParams(dp(76), dp(76));
         ringLp.gravity = Gravity.CENTER;
         shutter.addView(shutterRing, ringLp);
-
         shutterInner = new View(this);
-        shutterInner.setBackground(circle(Color.WHITE));
+        circleBg(shutterInner, 62, WHITE);
         FrameLayout.LayoutParams innerLp = new FrameLayout.LayoutParams(dp(62), dp(62));
         innerLp.gravity = Gravity.CENTER;
         shutter.addView(shutterInner, innerLp);
-
-        LinearLayout.LayoutParams shutterLp = new LinearLayout.LayoutParams(dp(96), dp(96));
-        shutterLp.leftMargin = dp(30);
-        shutterLp.rightMargin = dp(30);
+        FrameLayout.LayoutParams shutterLp = new FrameLayout.LayoutParams(dp(96), dp(96));
+        shutterLp.gravity = Gravity.CENTER;
         controls.addView(shutter, shutterLp);
 
-        // ⟳ 前后置:纯白
-        TextView flip = new TextView(this);
-        flip.setText("⟳");
-        flip.setTextSize(24);
-        flip.setTextColor(Color.WHITE);
-        flip.setGravity(Gravity.CENTER);
-        flip.setShadowLayer(6f, 0f, 1f, Color.BLACK);
+        // ⚡ 左
+        flashBtn = icon(R.drawable.ic_flash_on);
+        flashBtn.setPadding(dp(12), dp(12), dp(12), dp(12));
+        FrameLayout.LayoutParams flashLp = new FrameLayout.LayoutParams(dp(52), dp(52));
+        flashLp.gravity = Gravity.START | Gravity.CENTER_VERTICAL;
+        flashLp.leftMargin = dp(34);
+        flashBtn.setOnClickListener(v -> toggleFlash());
+        controls.addView(flashBtn, flashLp);
+
+        // ⟳ 右
+        ImageView flip = icon(R.drawable.ic_flip);
+        flip.setPadding(dp(12), dp(12), dp(12), dp(12));
+        FrameLayout.LayoutParams flipLp = new FrameLayout.LayoutParams(dp(52), dp(52));
+        flipLp.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
+        flipLp.rightMargin = dp(34);
         flip.setOnClickListener(v -> switchCamera());
-        controls.addView(flip, sideLp);
+        controls.addView(flip, flipLp);
 
         bottom.addView(controls);
         FrameLayout.LayoutParams bottomLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         bottomLp.gravity = Gravity.BOTTOM;
-        bottomLp.bottomMargin = dp(48);
+        bottomLp.bottomMargin = dp(40);
         root.addView(bottom, bottomLp);
 
         setContentView(root);
 
-        // 点按对焦
-        previewView.setOnTouchListener((v, event) -> {
-            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
-                focusAt(event.getX(), event.getY());
-            }
+        previewView.setOnTouchListener((v, e) -> {
+            if (e.getActionMasked() == MotionEvent.ACTION_UP) focusAt(e.getX(), e.getY());
             return true;
         });
 
-        // 快门:轻触拍照 / 长按(350ms)摄像
         shutter.setOnTouchListener((v, event) -> {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
@@ -286,11 +294,10 @@ public class NativeCameraActivity extends AppCompatActivity {
         if (camera == null) return;
         try {
             MeteringPoint point = previewView.getMeteringPointFactory().createPoint(x, y);
-            FocusMeteringAction action = new FocusMeteringAction.Builder(
+            camera.getCameraControl().startFocusAndMetering(new FocusMeteringAction.Builder(
                     point, FocusMeteringAction.FLAG_AF | FocusMeteringAction.FLAG_AE)
                     .setAutoCancelDuration(3, TimeUnit.SECONDS)
-                    .build();
-            camera.getCameraControl().startFocusAndMetering(action);
+                    .build());
         } catch (Exception ignored) {
         }
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) focusRing.getLayoutParams();
@@ -351,7 +358,7 @@ public class NativeCameraActivity extends AppCompatActivity {
         bindUseCases();
     }
 
-    /** ⚡ = 启用/禁用【拍照闪光灯】,不是常亮手电筒。 */
+    /** ⚡ = 启用/禁用【拍照闪光灯】(不是常亮手电筒)。开/关用两个矢量图标区分,均为纯白。 */
     private void toggleFlash() {
         if (camera == null || imageCapture == null) return;
         if (!camera.getCameraInfo().hasFlashUnit()) {
@@ -364,10 +371,8 @@ public class NativeCameraActivity extends AppCompatActivity {
     }
 
     private void updateFlashIcon() {
-        // 保持纯白:开=正常,关=加一条划线
-        torchIcon.setPaintFlags(flashOn
-                ? (torchIcon.getPaintFlags() & ~Paint.STRIKE_THRU_TEXT_FLAG)
-                : (torchIcon.getPaintFlags() | Paint.STRIKE_THRU_TEXT_FLAG));
+        flashBtn.setImageResource(flashOn ? R.drawable.ic_flash_on : R.drawable.ic_flash_off);
+        flashBtn.setAlpha(flashOn ? 1f : 0.6f);
     }
 
     private void toast(String text) {
@@ -377,7 +382,7 @@ public class NativeCameraActivity extends AppCompatActivity {
         }, 1800);
     }
 
-    // ==================== 拍照 ====================
+    // ==================== 拍照 / 录像 ====================
     private void takePhoto() {
         if (imageCapture == null || recordingNow) return;
         File file = new File(getCacheDir(), "IMG_" + System.currentTimeMillis() + ".jpg");
@@ -396,7 +401,6 @@ public class NativeCameraActivity extends AppCompatActivity {
                 });
     }
 
-    // ==================== 录像 ====================
     private void startRecording() {
         if (videoCapture == null || recordingNow) return;
         File file = new File(getCacheDir(), "VID_" + System.currentTimeMillis() + ".mp4");
@@ -445,7 +449,7 @@ public class NativeCameraActivity extends AppCompatActivity {
             d.setColor(0xFFFF3B30);
             shutterInner.setBackground(d);
         } else {
-            shutterInner.setBackground(circle(Color.WHITE));
+            circleBg(shutterInner, 62, WHITE);
         }
         hintView.setText(on ? ("● 摄像中 " + seconds + "s · 松手结束") : "轻触拍照,长按摄像");
     }
@@ -471,80 +475,111 @@ public class NativeCameraActivity extends AppCompatActivity {
         }
     }
 
-    // ==================== 编辑页:取消 / 涂鸦 / 撤回 / 前进 / 完成 ====================
+    // ==================== 编辑页 ====================
     private void openEditor(File file) {
         pendingFile = file;
         try {
-            photoBitmap = loadUprightBitmap(file);
+            base = loadUprightBitmap(file);
         } catch (Exception e) {
-            photoBitmap = null;
+            base = null;
         }
-        if (photoBitmap == null) {
-            finishWith(file, "image/jpeg"); // 解码失败就原样返回
+        if (base == null) {
+            finishWith(file, "image/jpeg");
             return;
         }
+        pixelated = null;
+        ops.clear();
+        redoOps.clear();
+        tool = Tool.DRAW;
+        showEditorUi();
+    }
 
+    private void showEditorUi() {
         FrameLayout editor = new FrameLayout(this);
         editor.setBackgroundColor(Color.BLACK);
 
-        drawView = new DrawView();
-        drawView.setPhoto(photoBitmap);
-        editor.addView(drawView, new FrameLayout.LayoutParams(
+        editorView = new EditorView();
+        editor.addView(editorView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
+        // 顶部:撤回 / 前进
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        undoBtn = icon(R.drawable.ic_undo);
+        undoBtn.setPadding(dp(10), dp(10), dp(10), dp(10));
+        undoBtn.setOnClickListener(v -> {
+            if (undo()) editorView.invalidate();
+        });
+        redoBtn = icon(R.drawable.ic_redo);
+        redoBtn.setPadding(dp(10), dp(10), dp(10), dp(10));
+        redoBtn.setOnClickListener(v -> {
+            if (redo()) editorView.invalidate();
+        });
+        LinearLayout.LayoutParams tb = new LinearLayout.LayoutParams(dp(48), dp(48));
+        tb.rightMargin = dp(6);
+        top.addView(undoBtn, tb);
+        top.addView(redoBtn, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        FrameLayout.LayoutParams topLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        topLp.gravity = Gravity.TOP;
+        topLp.topMargin = dp(12);
+        topLp.rightMargin = dp(6);
+        editor.addView(top, topLp);
+
+        // 底部工具条:取消 | 涂鸦 文字 马赛克 裁剪 | 完成
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView cancelBtn = toolText("取消", Color.WHITE);
+        TextView cancelBtn = textBtn("取消", WHITE);
         cancelBtn.setOnClickListener(v -> backToCamera());
 
-        drawBtn = toolText("涂鸦", Color.WHITE);
-        drawBtn.setOnClickListener(v -> {
-            drawMode = !drawMode;
-            if (drawView != null) drawView.setDrawEnabled(drawMode);
-            drawBtn.setAlpha(drawMode ? 1f : 0.5f);
-        });
+        drawBtn = icon(R.drawable.ic_draw);
+        textBtn = icon(R.drawable.ic_text);
+        mosaicBtn = icon(R.drawable.ic_mosaic);
+        cropBtn = icon(R.drawable.ic_crop);
+        for (ImageView b : new ImageView[]{drawBtn, textBtn, mosaicBtn, cropBtn}) {
+            b.setPadding(dp(10), dp(10), dp(10), dp(10));
+        }
+        drawBtn.setOnClickListener(v -> selectTool(Tool.DRAW));
+        textBtn.setOnClickListener(v -> selectTool(Tool.TEXT));
+        mosaicBtn.setOnClickListener(v -> selectTool(Tool.MOSAIC));
+        cropBtn.setOnClickListener(v -> showCropDialog());
 
-        undoBtn = toolText("撤回", Color.WHITE);
-        undoBtn.setOnClickListener(v -> {
-            if (drawView != null && drawView.undo()) updateUndoRedo();
-        });
-
-        redoBtn = toolText("前进", Color.WHITE);
-        redoBtn.setOnClickListener(v -> {
-            if (drawView != null && drawView.redo()) updateUndoRedo();
-        });
-
-        TextView doneBtn = toolText("完成", 0xFF07C160);
+        TextView doneBtn = textBtn("完成", 0xFF07C160);
         doneBtn.setOnClickListener(v -> finishEditing());
 
         LinearLayout.LayoutParams flex = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         bar.addView(cancelBtn, flex);
         bar.addView(drawBtn, flex);
-        bar.addView(undoBtn, flex);
-        bar.addView(redoBtn, flex);
+        bar.addView(textBtn, flex);
+        bar.addView(mosaicBtn, flex);
+        bar.addView(cropBtn, flex);
         bar.addView(doneBtn, flex);
 
         FrameLayout.LayoutParams barLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         barLp.gravity = Gravity.BOTTOM;
-        barLp.bottomMargin = dp(24);
+        barLp.bottomMargin = dp(20);
         editor.addView(bar, barLp);
 
         setContentView(editor);
-        updateUndoRedo();
+        selectTool(Tool.DRAW);
     }
 
-    private void backToCamera() {
-        photoBitmap = null;
-        drawView = null;
-        buildCameraUi();
-        bindUseCases();
+    private void selectTool(Tool t) {
+        tool = t;
+        // 选中态用"纯白 vs 半透明白"区分,不用彩色
+        drawBtn.setAlpha(t == Tool.DRAW ? 1f : 0.45f);
+        textBtn.setAlpha(t == Tool.TEXT ? 1f : 0.45f);
+        mosaicBtn.setAlpha(t == Tool.MOSAIC ? 1f : 0.45f);
+        cropBtn.setAlpha(1f);
+        if (editorView != null) editorView.invalidate();
     }
 
-    private TextView toolText(String text, int color) {
+    private TextView textBtn(String text, int color) {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextColor(color);
@@ -554,16 +589,117 @@ public class NativeCameraActivity extends AppCompatActivity {
         return t;
     }
 
+    private void backToCamera() {
+        base = null;
+        pixelated = null;
+        editorView = null;
+        ops.clear();
+        redoOps.clear();
+        buildCameraUi();
+        bindUseCases();
+    }
+
+    private boolean undo() {
+        if (ops.isEmpty()) return false;
+        redoOps.add(ops.remove(ops.size() - 1));
+        updateUndoRedo();
+        return true;
+    }
+
+    private boolean redo() {
+        if (redoOps.isEmpty()) return false;
+        ops.add(redoOps.remove(redoOps.size() - 1));
+        updateUndoRedo();
+        return true;
+    }
+
     private void updateUndoRedo() {
-        if (drawView == null) return;
-        undoBtn.setAlpha(drawView.canUndo() ? 1f : 0.4f);
-        redoBtn.setAlpha(drawView.canRedo() ? 1f : 0.4f);
+        if (undoBtn != null) undoBtn.setAlpha(ops.isEmpty() ? 0.4f : 1f);
+        if (redoBtn != null) redoBtn.setAlpha(redoOps.isEmpty() ? 0.4f : 1f);
+    }
+
+    private void promptText(float x, float y) {
+        final EditText input = new EditText(this);
+        input.setInputType(InputType.TYPE_CLASS_TEXT);
+        input.setHint("输入文字");
+        new AlertDialog.Builder(this)
+                .setTitle("添加文字")
+                .setView(input)
+                .setPositiveButton("确定", (d, w) -> {
+                    String s = input.getText().toString().trim();
+                    if (s.isEmpty() || base == null) return;
+                    TextOp op = new TextOp(s, x, y, Math.max(24f, base.getWidth() / 14f));
+                    ops.add(op);
+                    redoOps.clear();
+                    if (editorView != null) editorView.invalidate();
+                    updateUndoRedo();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void showCropDialog() {
+        final String[] items = {"原图", "1:1", "4:3", "16:9", "旋转 90°"};
+        new AlertDialog.Builder(this)
+                .setTitle("裁剪 / 旋转")
+                .setItems(items, (d, which) -> {
+                    switch (which) {
+                        case 0: applyCrop(0); break;
+                        case 1: applyCrop(1f); break;
+                        case 2: applyCrop(4f / 3f); break;
+                        case 3: applyCrop(16f / 9f); break;
+                        case 4: rotateBase(); break;
+                    }
+                    if (editorView != null) editorView.invalidate();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** ratio<=0 表示不裁剪(仅用于恢复原图比例);否则按宽高比居中裁剪。 */
+    private void applyCrop(float ratio) {
+        if (base == null) return;
+        int w = base.getWidth();
+        int h = base.getHeight();
+        int cw = w;
+        int ch = h;
+        if (ratio > 0) {
+            if ((float) w / h > ratio) {
+                cw = Math.round(h * ratio);
+            } else {
+                ch = Math.round(w / ratio);
+            }
+        }
+        int left = (w - cw) / 2;
+        int top = (h - ch) / 2;
+        Bitmap cropped = Bitmap.createBitmap(base, left, top, cw, ch);
+        base = cropped;
+        pixelated = null;
+        // 笔迹随裁剪平移(超出部分会被画布自然裁掉)
+        Matrix m = new Matrix();
+        m.postTranslate(-left, -top);
+        for (Op op : ops) op.transform(m);
+        for (Op op : redoOps) op.transform(m);
+    }
+
+    private void rotateBase() {
+        if (base == null) return;
+        int w = base.getWidth();
+        int h = base.getHeight();
+        Matrix rm = new Matrix();
+        rm.postRotate(90);
+        rm.postTranslate(h, 0); // (x,y) -> (h - y, x)
+        Bitmap rotated = Bitmap.createBitmap(base, 0, 0, w, h, rm, true);
+        base = rotated;
+        pixelated = null;
+        for (Op op : ops) op.transform(rm);
+        for (Op op : redoOps) op.transform(rm);
     }
 
     private void finishEditing() {
         File out = new File(getCacheDir(), "EDIT_" + System.currentTimeMillis() + ".jpg");
         try {
-            Bitmap flat = drawView.flatten();
+            Bitmap flat = editorView.flatten();
             try (FileOutputStream fos = new FileOutputStream(out)) {
                 flat.compress(Bitmap.CompressFormat.JPEG, 92, fos);
             }
@@ -574,144 +710,288 @@ public class NativeCameraActivity extends AppCompatActivity {
         }
     }
 
-    /** 按 EXIF 方向把照片摆正(否则编辑页显示 / 保存出来会歪)。 */
     private Bitmap loadUprightBitmap(File file) throws Exception {
         Bitmap bmp = BitmapFactory.decodeFile(file.getAbsolutePath());
         if (bmp == null) return null;
         ExifInterface exif = new ExifInterface(file.getAbsolutePath());
-        int orientation = exif.getAttributeInt(
-                ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+        int o = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
         Matrix m = new Matrix();
-        switch (orientation) {
-            case ExifInterface.ORIENTATION_ROTATE_90:
-                m.postRotate(90);
-                break;
-            case ExifInterface.ORIENTATION_ROTATE_180:
-                m.postRotate(180);
-                break;
-            case ExifInterface.ORIENTATION_ROTATE_270:
-                m.postRotate(270);
-                break;
-            default:
-                return bmp;
+        switch (o) {
+            case ExifInterface.ORIENTATION_ROTATE_90: m.postRotate(90); break;
+            case ExifInterface.ORIENTATION_ROTATE_180: m.postRotate(180); break;
+            case ExifInterface.ORIENTATION_ROTATE_270: m.postRotate(270); break;
+            default: return bmp;
         }
         return Bitmap.createBitmap(bmp, 0, 0, bmp.getWidth(), bmp.getHeight(), m, true);
     }
 
-    /** 涂鸦层:显示照片(等比居中)+ 手写笔迹;支持撤回/前进/合成导出。 */
-    private class DrawView extends View {
-        private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final List<Path> paths = new ArrayList<>();
-        private final List<Path> redoStack = new ArrayList<>();
-        private Bitmap photo;
-        private final RectF dest = new RectF();
-        private boolean drawEnabled = true;
+    // ==================== 编辑操作模型(坐标一律用"图像像素") ====================
+    private abstract static class Op {
+        abstract void drawImage(Canvas c, Bitmap pixelated, RectF imageRect);
+        abstract void drawView(Canvas c, Matrix img2view, Bitmap pixelated, RectF dest);
+        abstract void transform(Matrix m);
+    }
 
-        DrawView() {
-            super(NativeCameraActivity.this);
-            stroke.setColor(Color.WHITE);
-            stroke.setStyle(Paint.Style.STROKE);
-            stroke.setStrokeWidth(dp(5));
-            stroke.setStrokeCap(Paint.Cap.ROUND);
-            stroke.setStrokeJoin(Paint.Join.ROUND);
+    /** 涂鸦笔画(自由手写)。 */
+    private static class StrokeOp extends Op {
+        final Path path = new Path();
+        float width;
+
+        StrokeOp(float w) {
+            width = w;
         }
 
-        void setPhoto(Bitmap b) {
-            photo = b;
-            invalidate();
-        }
-
-        void setDrawEnabled(boolean on) {
-            drawEnabled = on;
-        }
-
-        boolean canUndo() {
-            return !paths.isEmpty();
-        }
-
-        boolean canRedo() {
-            return !redoStack.isEmpty();
-        }
-
-        boolean undo() {
-            if (paths.isEmpty()) return false;
-            redoStack.add(paths.remove(paths.size() - 1));
-            invalidate();
-            return true;
-        }
-
-        boolean redo() {
-            if (redoStack.isEmpty()) return false;
-            paths.add(redoStack.remove(redoStack.size() - 1));
-            invalidate();
-            return true;
+        private Paint paint(float scale) {
+            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(width * scale);
+            p.setStrokeCap(Paint.Cap.ROUND);
+            p.setStrokeJoin(Paint.Join.ROUND);
+            p.setColor(WHITE);
+            return p;
         }
 
         @Override
-        protected void onSizeChanged(int w, int h, int ow, int oh) {
-            super.onSizeChanged(w, h, ow, oh);
+        void drawImage(Canvas c, Bitmap pixelated, RectF imageRect) {
+            c.drawPath(path, paint(1f));
+        }
+
+        @Override
+        void drawView(Canvas c, Matrix img2view, Bitmap pixelated, RectF dest) {
+            Path p = new Path(path);
+            p.transform(img2view);
+            c.drawPath(p, paint(img2view.mapRadius(1f)));
+        }
+
+        @Override
+        void transform(Matrix m) {
+            path.transform(m);
+        }
+    }
+
+    /** 马赛克:拖一个矩形,把该区域打码(用低清底图放大 = 方块化)。 */
+    private static class MosaicOp extends Op {
+        final RectF rect;
+
+        MosaicOp(RectF r) {
+            rect = new RectF(r);
+        }
+
+        @Override
+        void drawImage(Canvas c, Bitmap pixelated, RectF imageRect) {
+            if (pixelated == null) return;
+            Paint noFilter = new Paint();
+            noFilter.setFilterBitmap(false);
+            noFilter.setAntiAlias(false);
+            c.save();
+            c.clipRect(rect);
+            c.drawBitmap(pixelated,
+                    new Rect(0, 0, pixelated.getWidth(), pixelated.getHeight()), imageRect, noFilter);
+            c.restore();
+        }
+
+        @Override
+        void drawView(Canvas c, Matrix img2view, Bitmap pixelated, RectF dest) {
+            if (pixelated == null) return;
+            RectF viewRect = new RectF(rect);
+            img2view.mapRect(viewRect);
+            Paint noFilter = new Paint();
+            noFilter.setFilterBitmap(false);
+            noFilter.setAntiAlias(false);
+            c.save();
+            c.clipRect(viewRect);
+            c.drawBitmap(pixelated,
+                    new Rect(0, 0, pixelated.getWidth(), pixelated.getHeight()), dest, noFilter);
+            c.restore();
+        }
+
+        @Override
+        void transform(Matrix m) {
+            m.mapRect(rect);
+        }
+    }
+
+    /** 文字(可拖动)。 */
+    private static class TextOp extends Op {
+        String text;
+        float x, y, size;
+
+        TextOp(String text, float x, float y, float size) {
+            this.text = text;
+            this.x = x;
+            this.y = y;
+            this.size = size;
+        }
+
+        private Paint paint(float scale) {
+            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            p.setColor(WHITE);
+            p.setTextSize(size * scale);
+            p.setShadowLayer(8f, 0f, 2f, 0xAA000000);
+            return p;
+        }
+
+        @Override
+        void drawImage(Canvas c, Bitmap pixelated, RectF imageRect) {
+            c.drawText(text, x, y, paint(1f));
+        }
+
+        @Override
+        void drawView(Canvas c, Matrix img2view, Bitmap pixelated, RectF dest) {
+            float[] pt = {x, y};
+            img2view.mapPoints(pt);
+            c.drawText(text, pt[0], pt[1], paint(img2view.mapRadius(1f)));
+        }
+
+        @Override
+        void transform(Matrix m) {
+            float[] pt = {x, y};
+            m.mapPoints(pt);
+            x = pt[0];
+            y = pt[1];
+        }
+    }
+
+    /** 编辑器视图:底图(等比居中)+ 各种操作;坐标在图像空间,绘制时映射到视图。 */
+    private class EditorView extends View {
+        private final RectF dest = new RectF();
+        private final Matrix img2view = new Matrix();
+        private StrokeOp activeStroke;
+        private RectF activeRect;
+        private TextOp dragging;
+        private float downX, downY;
+
+        EditorView() {
+            super(NativeCameraActivity.this);
+        }
+
+        private void ensurePixelated() {
+            if (base == null) return;
+            if (pixelated != null) return;
+            pixelated = Bitmap.createScaledBitmap(base,
+                    Math.max(1, base.getWidth() / 18), Math.max(1, base.getHeight() / 18), true);
+        }
+
+        private void computeDest() {
+            int w = getWidth();
+            int h = getHeight();
             dest.set(0, 0, w, h);
-            if (photo == null || w == 0 || h == 0) return;
-            float scale = Math.min((float) w / photo.getWidth(), (float) h / photo.getHeight());
-            float dw = photo.getWidth() * scale;
-            float dh = photo.getHeight() * scale;
+            if (base == null || w == 0 || h == 0) return;
+            float scale = Math.min((float) w / base.getWidth(), (float) h / base.getHeight());
+            float dw = base.getWidth() * scale;
+            float dh = base.getHeight() * scale;
             float left = (w - dw) / 2f;
             float top = (h - dh) / 2f;
             dest.set(left, top, left + dw, top + dh);
+            img2view.setRectToRect(new RectF(0, 0, base.getWidth(), base.getHeight()), dest, Matrix.ScaleToFit.FILL);
         }
 
         @Override
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            if (photo != null) canvas.drawBitmap(photo, null, dest, null);
-            for (Path p : paths) canvas.drawPath(p, stroke);
+            computeDest();
+            if (base == null) return;
+            canvas.drawBitmap(base, null, dest, null);
+            ensurePixelated();
+            for (Op op : ops) op.drawView(canvas, img2view, pixelated, dest);
+            if (activeStroke != null) activeStroke.drawView(canvas, img2view, pixelated, dest);
+            if (activeRect != null) new MosaicOp(activeRect).drawView(canvas, img2view, pixelated, dest);
+        }
+
+        private float[] toImage(float vx, float vy) {
+            Matrix inv = new Matrix();
+            if (!img2view.invert(inv)) return new float[]{vx, vy};
+            float[] pt = {vx, vy};
+            inv.mapPoints(pt);
+            return pt;
         }
 
         @Override
-        public boolean onTouchEvent(MotionEvent event) {
-            if (!drawEnabled || photo == null) return false;
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN: {
-                    Path p = new Path();
-                    p.moveTo(event.getX(), event.getY());
-                    paths.add(p);
-                    redoStack.clear();
+        public boolean onTouchEvent(MotionEvent e) {
+            if (base == null) return false;
+            float imScale = (float) base.getWidth() / Math.max(1f, dest.width());
+            float[] pt = toImage(e.getX(), e.getY());
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    downX = pt[0];
+                    downY = pt[1];
+                    if (tool == Tool.TEXT) {
+                        dragging = null;
+                        for (int i = ops.size() - 1; i >= 0; i--) {
+                            Op op = ops.get(i);
+                            if (op instanceof TextOp) {
+                                TextOp t = (TextOp) op;
+                                if (Math.abs(t.x - pt[0]) < t.size * 6 && Math.abs(t.y - pt[1]) < t.size * 2) {
+                                    dragging = t;
+                                    break;
+                                }
+                            }
+                        }
+                        if (dragging == null) promptText(pt[0], pt[1]);
+                        return true;
+                    }
+                    if (tool == Tool.MOSAIC) {
+                        activeRect = new RectF(pt[0], pt[1], pt[0], pt[1]);
+                    } else {
+                        activeStroke = new StrokeOp(Math.max(2f, 6f * imScale));
+                        activeStroke.path.moveTo(pt[0], pt[1]);
+                    }
                     invalidate();
                     return true;
-                }
-                case MotionEvent.ACTION_MOVE: {
-                    if (!paths.isEmpty()) {
-                        paths.get(paths.size() - 1).lineTo(event.getX(), event.getY());
+                case MotionEvent.ACTION_MOVE:
+                    if (dragging != null) {
+                        dragging.x = pt[0];
+                        dragging.y = pt[1];
+                        invalidate();
+                        return true;
+                    }
+                    if (activeRect != null) {
+                        activeRect.set(Math.min(downX, pt[0]), Math.min(downY, pt[1]),
+                                Math.max(downX, pt[0]), Math.max(downY, pt[1]));
+                        invalidate();
+                    } else if (activeStroke != null) {
+                        activeStroke.path.lineTo(pt[0], pt[1]);
                         invalidate();
                     }
                     return true;
-                }
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
+                    if (dragging != null) {
+                        dragging = null;
+                        return true;
+                    }
+                    if (activeRect != null) {
+                        if (activeRect.width() > 4 && activeRect.height() > 4) {
+                            ops.add(new MosaicOp(activeRect));
+                            redoOps.clear();
+                            updateUndoRedo();
+                        }
+                        activeRect = null;
+                        invalidate();
+                        return true;
+                    }
+                    if (activeStroke != null) {
+                        ops.add(activeStroke);
+                        redoOps.clear();
+                        activeStroke = null;
+                        updateUndoRedo();
+                        invalidate();
+                    }
                     return true;
                 default:
                     return false;
             }
         }
 
-        /** 合成:原图 + 涂鸦(视图坐标按比例映射回原图坐标)。 */
+        /** 合成:底图 + 所有操作,输出与原图同尺寸的位图。 */
         Bitmap flatten() {
-            int bw = photo.getWidth();
-            int bh = photo.getHeight();
-            Bitmap out = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888);
+            int w = base.getWidth();
+            int h = base.getHeight();
+            Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
             Canvas c = new Canvas(out);
-            c.drawBitmap(photo, 0, 0, null);
-            if (!paths.isEmpty() && dest.width() > 0 && dest.height() > 0) {
-                float sx = bw / dest.width();
-                float sy = bh / dest.height();
-                c.save();
-                c.translate(-dest.left, -dest.top);
-                c.scale(sx, sy);
-                Paint scaled = new Paint(stroke);
-                scaled.setStrokeWidth(stroke.getStrokeWidth() * Math.max(sx, sy));
-                for (Path p : paths) c.drawPath(p, scaled);
-                c.restore();
-            }
+            c.drawBitmap(base, 0, 0, null);
+            ensurePixelated();
+            for (Op op : ops) op.drawImage(c, pixelated, new RectF(0, 0, w, h));
             return out;
         }
     }
