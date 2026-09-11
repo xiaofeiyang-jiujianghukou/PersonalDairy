@@ -12,6 +12,10 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
+import android.graphics.PathMeasure;
+import android.graphics.Typeface;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.os.Bundle;
@@ -112,17 +116,29 @@ public class NativeCameraActivity extends AppCompatActivity {
     private int seconds = 0;
 
     // ---------------- 编辑阶段 ----------------
-    private enum Tool { DRAW, TEXT, MOSAIC, STICKER }
+    private enum Tool { DRAW, TEXT, STICKER, BLUR, CROP }
+    private enum BlurMode { MOSAIC, GAUSSIAN }
 
     private Bitmap base;          // 当前底图(裁剪/旋转后)
     private Bitmap pixelated;     // 马赛克用的低清底图
+    private Bitmap blurred;       // 高斯模糊用的更糊底图
     private File pendingFile;
     private EditorView editorView;
     private final List<Op> ops = new ArrayList<>();
     private final List<Op> redoOps = new ArrayList<>();
     private Tool tool = Tool.DRAW;
-    private ImageView drawBtn, textBtn, mosaicBtn, stickerBtn, cropBtn, undoBtn, redoBtn;
+    private ImageView drawBtn, textBtn, stickerBtn, blurBtn, cropBtn, undoBtn, redoBtn;
     private LinearLayout emojiBar; // 表情选择条(默认隐藏)
+    private LinearLayout subBar;   // 工具栏上方的"子工具条"(色板/字体/模糊模式/橡皮)
+    private LinearLayout cropBar;  // 裁剪模式的按钮条
+    private CropView cropView;     // 自定义裁剪层
+    private int inkColor = WHITE;
+    private int textColor = WHITE;
+    private int textStyle = 0;     // 0默认 1细体 2中体 3粗体
+    private boolean textBoxed = false;
+    private TextOp selectedText;
+    private BlurMode blurMode = BlurMode.MOSAIC;
+    private boolean eraser = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -518,6 +534,10 @@ public class NativeCameraActivity extends AppCompatActivity {
         editor.addView(editorView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
+        cropView = new CropView();
+        editor.addView(cropView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
         // ---------- 顶部:取消(左) + 撤回/前进(右) ----------
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
@@ -526,7 +546,6 @@ public class NativeCameraActivity extends AppCompatActivity {
         TextView cancelBtn = textBtn("取消", WHITE);
         cancelBtn.setOnClickListener(v -> backToCamera());
         top.addView(cancelBtn, new LinearLayout.LayoutParams(dp(72), dp(48)));
-
         top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
 
         undoBtn = icon(R.drawable.ic_undo);
@@ -552,28 +571,25 @@ public class NativeCameraActivity extends AppCompatActivity {
         topLp.rightMargin = dp(8);
         editor.addView(top, topLp);
 
-        // ---------- 底部:涂鸦 文字 表情 马赛克 裁剪(左) + 完成(右,绿色) ----------
+        // ---------- 底部:涂鸦 文字 表情 模糊 裁剪(左) + 完成(右,绿色) ----------
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
 
         drawBtn = icon(R.drawable.ic_draw);
         textBtn = icon(R.drawable.ic_text);
-        mosaicBtn = icon(R.drawable.ic_mosaic);
         stickerBtn = icon(R.drawable.ic_emoji);
+        blurBtn = icon(R.drawable.ic_blur);
         cropBtn = icon(R.drawable.ic_crop);
-        for (ImageView b : new ImageView[]{drawBtn, textBtn, mosaicBtn, stickerBtn, cropBtn}) {
+        for (ImageView b : new ImageView[]{drawBtn, textBtn, stickerBtn, blurBtn, cropBtn}) {
             b.setPadding(dp(9), dp(9), dp(9), dp(9));
             bar.addView(b, new LinearLayout.LayoutParams(dp(48), dp(48)));
         }
         drawBtn.setOnClickListener(v -> selectTool(Tool.DRAW));
         textBtn.setOnClickListener(v -> selectTool(Tool.TEXT));
-        mosaicBtn.setOnClickListener(v -> selectTool(Tool.MOSAIC));
-        stickerBtn.setOnClickListener(v -> {
-            selectTool(Tool.STICKER);
-            showEmojiBar();
-        });
-        cropBtn.setOnClickListener(v -> showCropDialog());
+        stickerBtn.setOnClickListener(v -> selectTool(Tool.STICKER));
+        blurBtn.setOnClickListener(v -> selectTool(Tool.BLUR));
+        cropBtn.setOnClickListener(v -> selectTool(Tool.CROP));
 
         bar.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
 
@@ -591,18 +607,76 @@ public class NativeCameraActivity extends AppCompatActivity {
         FrameLayout.LayoutParams barLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         barLp.gravity = Gravity.BOTTOM;
-        barLp.bottomMargin = dp(22);
+        barLp.bottomMargin = dp(20);
         barLp.leftMargin = dp(10);
         barLp.rightMargin = dp(10);
         editor.addView(bar, barLp);
 
-        // 表情选择条(默认隐藏,点"表情"才出现),位于底部工具条上方
+        // ---------- 子工具条(色板 / 字体 / 模糊模式 / 橡皮擦),位于底栏上方 ----------
+        subBar = new LinearLayout(this);
+        subBar.setOrientation(LinearLayout.HORIZONTAL);
+        subBar.setGravity(Gravity.CENTER_VERTICAL);
+        FrameLayout.LayoutParams subLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
+        subLp.gravity = Gravity.BOTTOM;
+        subLp.bottomMargin = dp(74);
+        editor.addView(subBar, subLp);
+
+        // ---------- 表情条(点"表情"才出现) ----------
         emojiBar = buildEmojiBar();
         FrameLayout.LayoutParams emojiLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(60));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
         emojiLp.gravity = Gravity.BOTTOM;
-        emojiLp.bottomMargin = dp(78);
+        emojiLp.bottomMargin = dp(74);
         editor.addView(emojiBar, emojiLp);
+
+        // ---------- 裁剪模式的按钮条:旋转 / 还原 / ✕ / ✓ ----------
+        cropBar = new LinearLayout(this);
+        cropBar.setOrientation(LinearLayout.HORIZONTAL);
+        cropBar.setGravity(Gravity.CENTER_VERTICAL);
+        cropBar.setVisibility(View.GONE);
+
+        ImageView rotBtn = icon(R.drawable.ic_rotate);
+        rotBtn.setPadding(dp(10), dp(10), dp(10), dp(10));
+        rotBtn.setOnClickListener(v -> {
+            rotateBase();
+            if (cropView != null) cropView.resetCrop();
+            if (editorView != null) editorView.invalidate();
+        });
+        cropBar.addView(rotBtn, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        TextView resetBtn = textBtn("还原", WHITE);
+        resetBtn.setOnClickListener(v -> {
+            if (cropView != null) cropView.resetCrop();
+        });
+        cropBar.addView(resetBtn, new LinearLayout.LayoutParams(dp(64), dp(48)));
+
+        cropBar.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+
+        ImageView cropCancel = icon(R.drawable.ic_close);
+        cropCancel.setPadding(dp(10), dp(10), dp(10), dp(10));
+        cropCancel.setOnClickListener(v -> selectTool(Tool.DRAW));
+        cropBar.addView(cropCancel, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        ImageView cropOk = icon(R.drawable.ic_check);
+        cropOk.setPadding(dp(10), dp(10), dp(10), dp(10));
+        cropOk.setOnClickListener(v -> {
+            if (cropView != null) cropView.applyCropNow();
+            selectTool(Tool.DRAW);
+            if (editorView != null) editorView.invalidate();
+            updateUndoRedo();
+        });
+        LinearLayout.LayoutParams okLp = new LinearLayout.LayoutParams(dp(48), dp(48));
+        okLp.leftMargin = dp(6);
+        cropBar.addView(cropOk, okLp);
+
+        FrameLayout.LayoutParams cropBarLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        cropBarLp.gravity = Gravity.BOTTOM;
+        cropBarLp.bottomMargin = dp(12);
+        cropBarLp.leftMargin = dp(10);
+        cropBarLp.rightMargin = dp(10);
+        editor.addView(cropBar, cropBarLp);
 
         setContentView(editor);
         selectTool(Tool.DRAW);
@@ -655,16 +729,129 @@ public class NativeCameraActivity extends AppCompatActivity {
         updateUndoRedo();
     }
 
+    /** 切换工具:显示/隐藏裁剪层,并刷新子工具条。 */
     private void selectTool(Tool t) {
         tool = t;
-        // 选中态用"纯白 vs 半透明白"区分,不用彩色
+        if (cropView != null) cropView.setVisibility(t == Tool.CROP ? View.VISIBLE : View.GONE);
+        if (cropBar != null) cropBar.setVisibility(t == Tool.CROP ? View.VISIBLE : View.GONE);
+        if (t == Tool.CROP && cropView != null) cropView.resetCrop();
+        if (emojiBar != null) emojiBar.setVisibility(t == Tool.STICKER ? View.VISIBLE : View.GONE);
+
         drawBtn.setAlpha(t == Tool.DRAW ? 1f : 0.45f);
         textBtn.setAlpha(t == Tool.TEXT ? 1f : 0.45f);
-        mosaicBtn.setAlpha(t == Tool.MOSAIC ? 1f : 0.45f);
         stickerBtn.setAlpha(t == Tool.STICKER ? 1f : 0.45f);
-        cropBtn.setAlpha(1f);
-        if (t != Tool.STICKER && emojiBar != null) emojiBar.setVisibility(View.GONE);
+        blurBtn.setAlpha(t == Tool.BLUR ? 1f : 0.45f);
+        cropBtn.setAlpha(t == Tool.CROP ? 1f : 0.45f);
+
+        if (t != Tool.TEXT) selectedText = null;
+        refreshSubBar();
         if (editorView != null) editorView.invalidate();
+    }
+
+    /** 子工具条内容:涂鸦=色板+橡皮;文字=字体+色板+T框;模糊=模式+橡皮。 */
+    private void refreshSubBar() {
+        if (subBar == null) return;
+        subBar.removeAllViews();
+        if (tool == Tool.CROP || tool == Tool.STICKER) {
+            subBar.setVisibility(View.GONE);
+            return;
+        }
+        subBar.setVisibility(View.VISIBLE);
+
+        if (tool == Tool.TEXT) {
+            String[] fonts = {"默认", "细体", "中体", "粗体"};
+            for (int i = 0; i < fonts.length; i++) {
+                final int idx = i;
+                subBar.addView(chip(fonts[i], textStyle == idx, v -> {
+                    textStyle = idx;
+                    applyTextStyle();
+                    refreshSubBar();
+                }));
+            }
+        }
+
+        int current = tool == Tool.TEXT ? textColor : inkColor;
+        for (int c : PALETTE) {
+            subBar.addView(dot(c, current == c, v -> {
+                if (tool == Tool.TEXT) textColor = c;
+                else inkColor = c;
+                applyTextStyle();
+                refreshSubBar();
+            }));
+        }
+
+        if (tool == Tool.TEXT) {
+            subBar.addView(chip("T框", textBoxed, v -> {
+                textBoxed = !textBoxed;
+                applyTextStyle();
+                refreshSubBar();
+            }));
+        } else if (tool == Tool.DRAW) {
+            subBar.addView(chip("橡皮", eraser, v -> {
+                eraser = !eraser;
+                refreshSubBar();
+            }));
+        } else if (tool == Tool.BLUR) {
+            subBar.addView(chip("马赛克", blurMode == BlurMode.MOSAIC, v -> {
+                blurMode = BlurMode.MOSAIC;
+                eraser = false;
+                refreshSubBar();
+            }));
+            subBar.addView(chip("高斯模糊", blurMode == BlurMode.GAUSSIAN, v -> {
+                blurMode = BlurMode.GAUSSIAN;
+                eraser = false;
+                refreshSubBar();
+            }));
+            subBar.addView(chip("橡皮", eraser, v -> {
+                eraser = !eraser;
+                refreshSubBar();
+            }));
+        }
+    }
+
+    /** 把当前文字样式应用到选中的文字(没有选中则只是设为"新建默认")。 */
+    private void applyTextStyle() {
+        if (selectedText != null) {
+            selectedText.color = textColor;
+            selectedText.style = textStyle;
+            selectedText.boxed = textBoxed;
+            if (editorView != null) editorView.invalidate();
+        }
+    }
+
+    private TextView chip(String label, boolean active, View.OnClickListener onClick) {
+        TextView t = new TextView(this);
+        t.setText(label);
+        t.setTextSize(13);
+        t.setTextColor(active ? Color.BLACK : WHITE);
+        t.setGravity(Gravity.CENTER);
+        android.graphics.drawable.GradientDrawable d = new android.graphics.drawable.GradientDrawable();
+        d.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        d.setCornerRadius(dp(14));
+        d.setStroke(dp(1), 0x88FFFFFF);
+        d.setColor(active ? WHITE : 0x33000000);
+        t.setBackground(d);
+        t.setPadding(dp(12), dp(6), dp(12), dp(6));
+        t.setOnClickListener(onClick);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.rightMargin = dp(6);
+        t.setLayoutParams(lp);
+        return t;
+    }
+
+    private View dot(int color, boolean active, View.OnClickListener onClick) {
+        View v = new View(this);
+        android.graphics.drawable.GradientDrawable d = new android.graphics.drawable.GradientDrawable();
+        d.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        d.setColor(color);
+        d.setStroke(active ? dp(3) : dp(1), active ? 0xFFFFD479 : 0x66FFFFFF);
+        v.setBackground(d);
+        v.setOnClickListener(onClick);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(28), dp(28));
+        lp.rightMargin = dp(8);
+        v.setLayoutParams(lp);
+        return v;
     }
 
     private TextView textBtn(String text, int color) {
@@ -682,6 +869,10 @@ public class NativeCameraActivity extends AppCompatActivity {
         pixelated = null;
         editorView = null;
         emojiBar = null;
+        subBar = null;
+        cropView = null;
+        cropBar = null;
+        selectedText = null;
         ops.clear();
         redoOps.clear();
         buildCameraUi();
@@ -717,58 +908,16 @@ public class NativeCameraActivity extends AppCompatActivity {
                 .setPositiveButton("确定", (d, w) -> {
                     String s = input.getText().toString().trim();
                     if (s.isEmpty() || base == null) return;
-                    TextOp op = new TextOp(s, x, y, Math.max(24f, base.getWidth() / 14f));
+                    TextOp op = new TextOp(s, x, y, Math.max(24f, base.getWidth() / 14f),
+                            textColor, textStyle, textBoxed);
                     ops.add(op);
+                    selectedText = op;
                     redoOps.clear();
                     if (editorView != null) editorView.invalidate();
                     updateUndoRedo();
                 })
                 .setNegativeButton("取消", null)
                 .show();
-    }
-
-    private void showCropDialog() {
-        final String[] items = {"原图", "1:1", "4:3", "16:9", "旋转 90°"};
-        new AlertDialog.Builder(this)
-                .setTitle("裁剪 / 旋转")
-                .setItems(items, (d, which) -> {
-                    switch (which) {
-                        case 0: applyCrop(0); break;
-                        case 1: applyCrop(1f); break;
-                        case 2: applyCrop(4f / 3f); break;
-                        case 3: applyCrop(16f / 9f); break;
-                        case 4: rotateBase(); break;
-                    }
-                    if (editorView != null) editorView.invalidate();
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    /** ratio<=0 表示不裁剪(仅用于恢复原图比例);否则按宽高比居中裁剪。 */
-    private void applyCrop(float ratio) {
-        if (base == null) return;
-        int w = base.getWidth();
-        int h = base.getHeight();
-        int cw = w;
-        int ch = h;
-        if (ratio > 0) {
-            if ((float) w / h > ratio) {
-                cw = Math.round(h * ratio);
-            } else {
-                ch = Math.round(w / ratio);
-            }
-        }
-        int left = (w - cw) / 2;
-        int top = (h - ch) / 2;
-        Bitmap cropped = Bitmap.createBitmap(base, left, top, cw, ch);
-        base = cropped;
-        pixelated = null;
-        // 笔迹随裁剪平移(超出部分会被画布自然裁掉)
-        Matrix m = new Matrix();
-        m.postTranslate(-left, -top);
-        for (Op op : ops) op.transform(m);
-        for (Op op : redoOps) op.transform(m);
     }
 
     private void rotateBase() {
@@ -781,6 +930,7 @@ public class NativeCameraActivity extends AppCompatActivity {
         Bitmap rotated = Bitmap.createBitmap(base, 0, 0, w, h, rm, true);
         base = rotated;
         pixelated = null;
+        blurred = null;
         for (Op op : ops) op.transform(rm);
         for (Op op : redoOps) op.transform(rm);
     }
@@ -815,92 +965,219 @@ public class NativeCameraActivity extends AppCompatActivity {
     }
 
     // ==================== 编辑操作模型(坐标一律用"图像像素") ====================
+    private static final int[] PALETTE = {
+            0xFFFFFFFF, 0xFF000000, 0xFFE53935, 0xFFF57C00, 0xFFFDD835,
+            0xFF7CB342, 0xFF00A86B, 0xFF1E88E5
+    };
+
+    private static Typeface typefaceFor(int style) {
+        switch (style) {
+            case 1: return Typeface.create("sans-serif-light", Typeface.NORMAL);
+            case 2: return Typeface.create("sans-serif-medium", Typeface.NORMAL);
+            case 3: return Typeface.create("sans-serif", Typeface.BOLD);
+            default: return Typeface.create("sans-serif", Typeface.NORMAL);
+        }
+    }
+
+    /** 把一条笔画路径"加粗"成区域(圆并集),用于模糊/打码/擦除的取形。 */
+    private static Path buildOutline(Path src, float width) {
+        Path out = new Path();
+        PathMeasure pm = new PathMeasure(src, false);
+        float len = pm.getLength();
+        if (len <= 0) return out;
+        float step = Math.max(2f, width / 3f);
+        float[] pos = new float[2];
+        Path circle = new Path();
+        for (float d = 0; d <= len; d += step) {
+            pm.getPosTan(d, pos, null);
+            circle.reset();
+            circle.addCircle(pos[0], pos[1], width / 2f, Path.Direction.CW);
+            out.op(circle, Path.Op.UNION);
+        }
+        return out;
+    }
+
+    private static float luminance(int c) {
+        return (0.299f * Color.red(c) + 0.587f * Color.green(c) + 0.114f * Color.blue(c)) / 255f;
+    }
+
     private abstract static class Op {
-        abstract void drawImage(Canvas c, Bitmap pixelated, RectF imageRect);
-        abstract void drawView(Canvas c, Matrix img2view, Bitmap pixelated, RectF dest);
+        boolean erase = false;
+        abstract void drawImage(Canvas c, Bitmap pixelated, Bitmap blurred, RectF imageRect);
+        abstract void drawView(Canvas c, Matrix img2view, Bitmap pixelated, Bitmap blurred, RectF dest);
         abstract void transform(Matrix m);
     }
 
-    /** 涂鸦笔画(自由手写)。 */
+    /** 涂鸦笔画(自由手写;可带颜色,也可作为橡皮擦)。 */
     private static class StrokeOp extends Op {
         final Path path = new Path();
-        float width;
+        final float width;
+        final int color;
+        private Path outline;
 
-        StrokeOp(float w) {
+        StrokeOp(float w, int color, boolean erase) {
             width = w;
+            this.color = color;
+            this.erase = erase;
         }
 
-        private Paint paint(float scale) {
+        Path outlineImage() {
+            if (outline == null) outline = buildOutline(path, width);
+            return outline;
+        }
+
+        private Paint strokePaint(float scale, boolean clear) {
             Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
             p.setStyle(Paint.Style.STROKE);
             p.setStrokeWidth(width * scale);
             p.setStrokeCap(Paint.Cap.ROUND);
             p.setStrokeJoin(Paint.Join.ROUND);
-            p.setColor(WHITE);
+            if (clear) p.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.CLEAR));
+            else p.setColor(color);
             return p;
         }
 
         @Override
-        void drawImage(Canvas c, Bitmap pixelated, RectF imageRect) {
-            c.drawPath(path, paint(1f));
+        void drawImage(Canvas c, Bitmap pixelated, Bitmap blurred, RectF imageRect) {
+            c.drawPath(path, strokePaint(1f, erase));
         }
 
         @Override
-        void drawView(Canvas c, Matrix img2view, Bitmap pixelated, RectF dest) {
+        void drawView(Canvas c, Matrix img2view, Bitmap pixelated, Bitmap blurred, RectF dest) {
             Path p = new Path(path);
             p.transform(img2view);
-            c.drawPath(p, paint(img2view.mapRadius(1f)));
+            c.drawPath(p, strokePaint(img2view.mapRadius(1f), erase));
         }
 
         @Override
         void transform(Matrix m) {
             path.transform(m);
+            outline = null;
         }
     }
 
-    /** 马赛克:拖一个矩形,把该区域打码(用低清底图放大 = 方块化)。 */
-    private static class MosaicOp extends Op {
-        final RectF rect;
+    /** 模糊/打码笔画:沿笔画把该区域换成"打码"或"高斯模糊"底图;也可作为橡皮擦。 */
+    private static class BlurOp extends Op {
+        final Path path = new Path();
+        final float width;
+        final boolean gaussian;
+        private Path outline;
 
-        MosaicOp(RectF r) {
-            rect = new RectF(r);
+        BlurOp(float w, boolean gaussian, boolean erase) {
+            width = w;
+            this.gaussian = gaussian;
+            this.erase = erase;
+        }
+
+        private Path outlineImage() {
+            if (outline == null) outline = buildOutline(path, width);
+            return outline;
         }
 
         @Override
-        void drawImage(Canvas c, Bitmap pixelated, RectF imageRect) {
-            if (pixelated == null) return;
+        void drawImage(Canvas c, Bitmap pixelated, Bitmap blurred, RectF imageRect) {
+            Bitmap src = gaussian ? blurred : pixelated;
+            if (src == null) return;
             Paint noFilter = new Paint();
-            noFilter.setFilterBitmap(false);
-            noFilter.setAntiAlias(false);
+            noFilter.setFilterBitmap(gaussian);
+            noFilter.setAntiAlias(gaussian);
+            if (erase) noFilter.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.CLEAR));
             c.save();
-            c.clipRect(rect);
-            c.drawBitmap(pixelated,
-                    new Rect(0, 0, pixelated.getWidth(), pixelated.getHeight()), imageRect, noFilter);
+            c.clipPath(outlineImage());
+            c.drawBitmap(src, new Rect(0, 0, src.getWidth(), src.getHeight()), imageRect, noFilter);
             c.restore();
         }
 
         @Override
-        void drawView(Canvas c, Matrix img2view, Bitmap pixelated, RectF dest) {
-            if (pixelated == null) return;
-            RectF viewRect = new RectF(rect);
-            img2view.mapRect(viewRect);
+        void drawView(Canvas c, Matrix img2view, Bitmap pixelated, Bitmap blurred, RectF dest) {
+            Bitmap src = gaussian ? blurred : pixelated;
+            if (src == null) return;
+            Path outlineView = new Path(outlineImage());
+            outlineView.transform(img2view);
             Paint noFilter = new Paint();
-            noFilter.setFilterBitmap(false);
-            noFilter.setAntiAlias(false);
+            noFilter.setFilterBitmap(gaussian);
+            noFilter.setAntiAlias(gaussian);
+            if (erase) noFilter.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.CLEAR));
             c.save();
-            c.clipRect(viewRect);
-            c.drawBitmap(pixelated,
-                    new Rect(0, 0, pixelated.getWidth(), pixelated.getHeight()), dest, noFilter);
+            c.clipPath(outlineView);
+            c.drawBitmap(src, new Rect(0, 0, src.getWidth(), src.getHeight()), dest, noFilter);
             c.restore();
         }
 
         @Override
         void transform(Matrix m) {
-            m.mapRect(rect);
+            path.transform(m);
+            outline = null;
         }
     }
 
-    /** 表情贴纸(可拖动;emoji 由系统彩色字体渲染,这里就是要彩色)。 */
+    /** 文字:支持颜色 / 字体粗细 / 带框。 */
+    private static class TextOp extends Op {
+        String text;
+        float x, y, size;
+        int color;
+        int style;
+        boolean boxed;
+
+        TextOp(String text, float x, float y, float size, int color, int style, boolean boxed) {
+            this.text = text;
+            this.x = x;
+            this.y = y;
+            this.size = size;
+            this.color = color;
+            this.style = style;
+            this.boxed = boxed;
+        }
+
+        private Paint paint(float scale) {
+            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            p.setColor(color);
+            p.setTextSize(size * scale);
+            p.setTypeface(typefaceFor(style));
+            p.setShadowLayer(boxed ? 0f : 8f, 0f, 2f, 0xAA000000);
+            return p;
+        }
+
+        private void draw(Canvas c, Paint p, float scale) {
+            if (boxed) {
+                float pad = size * scale * 0.25f;
+                RectF r = new RectF(x, y - size * scale, x + p.measureText(text) + pad * 2f, y + pad * 1.6f);
+                Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
+                bg.setColor(color);
+                float rad = size * scale * 0.2f;
+                c.drawRoundRect(r, rad, rad, bg);
+                Paint tp = new Paint(p);
+                tp.setColor(luminance(color) > 0.6f ? Color.BLACK : Color.WHITE);
+                c.drawText(text, x + pad, y, tp);
+            } else {
+                c.drawText(text, x, y, p);
+            }
+        }
+
+        @Override
+        void drawImage(Canvas c, Bitmap pixelated, Bitmap blurred, RectF imageRect) {
+            draw(c, paint(1f), 1f);
+        }
+
+        @Override
+        void drawView(Canvas c, Matrix img2view, Bitmap pixelated, Bitmap blurred, RectF dest) {
+            float scale = img2view.mapRadius(1f);
+            float[] pt = {x, y};
+            img2view.mapPoints(pt);
+            TextOp tmp = new TextOp(text, pt[0], pt[1], size, color, style, boxed);
+            tmp.draw(c, tmp.paint(scale), scale);
+        }
+
+        @Override
+        void transform(Matrix m) {
+            float[] pt = {x, y};
+            m.mapPoints(pt);
+            x = pt[0];
+            y = pt[1];
+        }
+    }
+
+    /** 表情贴纸(可拖动;emoji 用系统彩色字体渲染)。 */
     private static class StickerOp extends Op {
         String emoji;
         float x, y, size;
@@ -921,12 +1198,12 @@ public class NativeCameraActivity extends AppCompatActivity {
         }
 
         @Override
-        void drawImage(Canvas c, Bitmap pixelated, RectF imageRect) {
+        void drawImage(Canvas c, Bitmap pixelated, Bitmap blurred, RectF imageRect) {
             c.drawText(emoji, x, y + size * 0.34f, paint(1f));
         }
 
         @Override
-        void drawView(Canvas c, Matrix img2view, Bitmap pixelated, RectF dest) {
+        void drawView(Canvas c, Matrix img2view, Bitmap pixelated, Bitmap blurred, RectF dest) {
             float[] pt = {x, y};
             img2view.mapPoints(pt);
             float scale = img2view.mapRadius(1f);
@@ -942,53 +1219,11 @@ public class NativeCameraActivity extends AppCompatActivity {
         }
     }
 
-    /** 文字(可拖动)。 */
-    private static class TextOp extends Op {
-        String text;
-        float x, y, size;
-
-        TextOp(String text, float x, float y, float size) {
-            this.text = text;
-            this.x = x;
-            this.y = y;
-            this.size = size;
-        }
-
-        private Paint paint(float scale) {
-            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-            p.setColor(WHITE);
-            p.setTextSize(size * scale);
-            p.setShadowLayer(8f, 0f, 2f, 0xAA000000);
-            return p;
-        }
-
-        @Override
-        void drawImage(Canvas c, Bitmap pixelated, RectF imageRect) {
-            c.drawText(text, x, y, paint(1f));
-        }
-
-        @Override
-        void drawView(Canvas c, Matrix img2view, Bitmap pixelated, RectF dest) {
-            float[] pt = {x, y};
-            img2view.mapPoints(pt);
-            c.drawText(text, pt[0], pt[1], paint(img2view.mapRadius(1f)));
-        }
-
-        @Override
-        void transform(Matrix m) {
-            float[] pt = {x, y};
-            m.mapPoints(pt);
-            x = pt[0];
-            y = pt[1];
-        }
-    }
-
-    /** 编辑器视图:底图(等比居中)+ 各种操作;坐标在图像空间,绘制时映射到视图。 */
+    /** 编辑器视图:底图(等比居中)+ 墨迹层/模糊层(各支持橡皮擦)+ 文字贴纸层。 */
     private class EditorView extends View {
         private final RectF dest = new RectF();
         private final Matrix img2view = new Matrix();
-        private StrokeOp activeStroke;
-        private RectF activeRect;
+        private Op active;
         private Op dragging;
         private float downX, downY;
 
@@ -996,11 +1231,16 @@ public class NativeCameraActivity extends AppCompatActivity {
             super(NativeCameraActivity.this);
         }
 
-        private void ensurePixelated() {
+        private void ensureLayers() {
             if (base == null) return;
-            if (pixelated != null) return;
-            pixelated = Bitmap.createScaledBitmap(base,
-                    Math.max(1, base.getWidth() / 18), Math.max(1, base.getHeight() / 18), true);
+            if (pixelated == null) {
+                pixelated = Bitmap.createScaledBitmap(base,
+                        Math.max(1, base.getWidth() / 18), Math.max(1, base.getHeight() / 18), true);
+            }
+            if (blurred == null) {
+                blurred = Bitmap.createScaledBitmap(base,
+                        Math.max(1, base.getWidth() / 40), Math.max(1, base.getHeight() / 40), true);
+            }
         }
 
         private void computeDest() {
@@ -1017,16 +1257,41 @@ public class NativeCameraActivity extends AppCompatActivity {
             img2view.setRectToRect(new RectF(0, 0, base.getWidth(), base.getHeight()), dest, Matrix.ScaleToFit.FILL);
         }
 
+        private boolean isInk(Op op) {
+            return op instanceof StrokeOp;
+        }
+
+        private boolean isBlur(Op op) {
+            return op instanceof BlurOp;
+        }
+
         @Override
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             computeDest();
             if (base == null) return;
             canvas.drawBitmap(base, null, dest, null);
-            ensurePixelated();
-            for (Op op : ops) op.drawView(canvas, img2view, pixelated, dest);
-            if (activeStroke != null) activeStroke.drawView(canvas, img2view, pixelated, dest);
-            if (activeRect != null) new MosaicOp(activeRect).drawView(canvas, img2view, pixelated, dest);
+            ensureLayers();
+
+            // 墨迹层(画笔 + 橡皮擦)
+            int c1 = canvas.saveLayer(dest, null);
+            for (Op op : ops) if (isInk(op) && !op.erase) op.drawView(canvas, img2view, pixelated, blurred, dest);
+            if (active != null && isInk(active) && !active.erase) active.drawView(canvas, img2view, pixelated, blurred, dest);
+            for (Op op : ops) if (isInk(op) && op.erase) op.drawView(canvas, img2view, pixelated, blurred, dest);
+            if (active != null && isInk(active) && active.erase) active.drawView(canvas, img2view, pixelated, blurred, dest);
+            canvas.restoreToCount(c1);
+
+            // 模糊层(打码/高斯 + 橡皮擦)
+            int c2 = canvas.saveLayer(dest, null);
+            for (Op op : ops) if (isBlur(op) && !op.erase) op.drawView(canvas, img2view, pixelated, blurred, dest);
+            if (active != null && isBlur(active) && !active.erase) active.drawView(canvas, img2view, pixelated, blurred, dest);
+            for (Op op : ops) if (isBlur(op) && op.erase) op.drawView(canvas, img2view, pixelated, blurred, dest);
+            if (active != null && isBlur(active) && active.erase) active.drawView(canvas, img2view, pixelated, blurred, dest);
+            canvas.restoreToCount(c2);
+
+            // 文字 / 贴纸
+            for (Op op : ops) if (!isInk(op) && !isBlur(op)) op.drawView(canvas, img2view, pixelated, blurred, dest);
+            if (selectedText != null && !ops.contains(selectedText)) selectedText = null;
         }
 
         private float[] toImage(float vx, float vy) {
@@ -1035,6 +1300,24 @@ public class NativeCameraActivity extends AppCompatActivity {
             float[] pt = {vx, vy};
             inv.mapPoints(pt);
             return pt;
+        }
+
+        private Op hitTextOrSticker(float ix, float iy) {
+            for (int i = ops.size() - 1; i >= 0; i--) {
+                Op op = ops.get(i);
+                float ox, oy, os;
+                if (op instanceof TextOp) {
+                    TextOp t = (TextOp) op;
+                    ox = t.x; oy = t.y; os = t.size;
+                } else if (op instanceof StickerOp) {
+                    StickerOp t = (StickerOp) op;
+                    ox = t.x; oy = t.y; os = t.size;
+                } else {
+                    continue;
+                }
+                if (Math.abs(ox - ix) < os * 1.6f && Math.abs(oy - iy) < os * 1.4f) return op;
+            }
+            return null;
         }
 
         @Override
@@ -1047,34 +1330,23 @@ public class NativeCameraActivity extends AppCompatActivity {
                     downX = pt[0];
                     downY = pt[1];
                     if (tool == Tool.TEXT || tool == Tool.STICKER) {
-                        // 先看有没有点到已存在的文字/表情 → 拖动它
-                        dragging = null;
-                        for (int i = ops.size() - 1; i >= 0; i--) {
-                            Op op = ops.get(i);
-                            float ox, oy, os;
-                            if (op instanceof TextOp) {
-                                TextOp t = (TextOp) op;
-                                ox = t.x; oy = t.y; os = t.size;
-                            } else if (op instanceof StickerOp) {
-                                StickerOp t = (StickerOp) op;
-                                ox = t.x; oy = t.y; os = t.size;
-                            } else {
-                                continue;
-                            }
-                            if (Math.abs(ox - pt[0]) < os * 1.2f && Math.abs(oy - pt[1]) < os * 1.2f) {
-                                dragging = op;
-                                break;
-                            }
+                        dragging = hitTextOrSticker(pt[0], pt[1]);
+                        if (dragging instanceof TextOp) {
+                            selectedText = (TextOp) dragging;
+                            refreshSubBar();
                         }
                         if (dragging == null && tool == Tool.TEXT) promptText(pt[0], pt[1]);
                         return true;
                     }
-                    if (tool == Tool.MOSAIC) {
-                        activeRect = new RectF(pt[0], pt[1], pt[0], pt[1]);
+                    if (tool == Tool.DRAW) {
+                        active = new StrokeOp(Math.max(2f, 7f * imScale), inkColor, eraser);
+                    } else if (tool == Tool.BLUR) {
+                        active = new BlurOp(Math.max(4f, 26f * imScale), blurMode == BlurMode.GAUSSIAN, eraser);
                     } else {
-                        activeStroke = new StrokeOp(Math.max(2f, 6f * imScale));
-                        activeStroke.path.moveTo(pt[0], pt[1]);
+                        return false;
                     }
+                    if (active instanceof StrokeOp) ((StrokeOp) active).path.moveTo(pt[0], pt[1]);
+                    else ((BlurOp) active).path.moveTo(pt[0], pt[1]);
                     invalidate();
                     return true;
                 case MotionEvent.ACTION_MOVE:
@@ -1091,14 +1363,9 @@ public class NativeCameraActivity extends AppCompatActivity {
                         invalidate();
                         return true;
                     }
-                    if (activeRect != null) {
-                        activeRect.set(Math.min(downX, pt[0]), Math.min(downY, pt[1]),
-                                Math.max(downX, pt[0]), Math.max(downY, pt[1]));
-                        invalidate();
-                    } else if (activeStroke != null) {
-                        activeStroke.path.lineTo(pt[0], pt[1]);
-                        invalidate();
-                    }
+                    if (active instanceof StrokeOp) ((StrokeOp) active).path.lineTo(pt[0], pt[1]);
+                    else if (active instanceof BlurOp) ((BlurOp) active).path.lineTo(pt[0], pt[1]);
+                    invalidate();
                     return true;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
@@ -1106,20 +1373,10 @@ public class NativeCameraActivity extends AppCompatActivity {
                         dragging = null;
                         return true;
                     }
-                    if (activeRect != null) {
-                        if (activeRect.width() > 4 && activeRect.height() > 4) {
-                            ops.add(new MosaicOp(activeRect));
-                            redoOps.clear();
-                            updateUndoRedo();
-                        }
-                        activeRect = null;
-                        invalidate();
-                        return true;
-                    }
-                    if (activeStroke != null) {
-                        ops.add(activeStroke);
+                    if (active != null) {
+                        ops.add(active);
                         redoOps.clear();
-                        activeStroke = null;
+                        active = null;
                         updateUndoRedo();
                         invalidate();
                     }
@@ -1129,16 +1386,165 @@ public class NativeCameraActivity extends AppCompatActivity {
             }
         }
 
-        /** 合成:底图 + 所有操作,输出与原图同尺寸的位图。 */
         Bitmap flatten() {
             int w = base.getWidth();
             int h = base.getHeight();
             Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
             Canvas c = new Canvas(out);
+            RectF imgRect = new RectF(0, 0, w, h);
+            ensureLayersFor(c);
             c.drawBitmap(base, 0, 0, null);
-            ensurePixelated();
-            for (Op op : ops) op.drawImage(c, pixelated, new RectF(0, 0, w, h));
+            int l1 = c.saveLayer(imgRect, null);
+            for (Op op : ops) if (isInk(op) && !op.erase) op.drawImage(c, pixelated, blurred, imgRect);
+            for (Op op : ops) if (isInk(op) && op.erase) op.drawImage(c, pixelated, blurred, imgRect);
+            c.restoreToCount(l1);
+            int l2 = c.saveLayer(imgRect, null);
+            for (Op op : ops) if (isBlur(op) && !op.erase) op.drawImage(c, pixelated, blurred, imgRect);
+            for (Op op : ops) if (isBlur(op) && op.erase) op.drawImage(c, pixelated, blurred, imgRect);
+            c.restoreToCount(l2);
+            for (Op op : ops) if (!isInk(op) && !isBlur(op)) op.drawImage(c, pixelated, blurred, imgRect);
             return out;
+        }
+
+        private void ensureLayersFor(Canvas c) {
+            ensureLayers();
+        }
+    }
+
+    // ==================== 自定义裁剪 ====================
+    private class CropView extends View {
+        private final RectF imgRect = new RectF();
+        private final RectF crop = new RectF();
+        private int handle = -1; // 0..7 八个把手, 8 移动, -1 无
+        private float lastX, lastY;
+
+        CropView() {
+            super(NativeCameraActivity.this);
+            setVisibility(GONE);
+        }
+
+        void resetCrop() {
+            computeImgRect();
+            crop.set(imgRect);
+            invalidate();
+        }
+
+        private void computeImgRect() {
+            int w = getWidth();
+            int h = getHeight();
+            if (base == null || w == 0 || h == 0) return;
+            float scale = Math.min((float) w / base.getWidth(), (float) h / base.getHeight());
+            float dw = base.getWidth() * scale;
+            float dh = base.getHeight() * scale;
+            float left = (w - dw) / 2f;
+            float top = (h - dh) / 2f;
+            imgRect.set(left, top, left + dw, top + dh);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (base == null) return;
+            computeImgRect();
+            if (crop.isEmpty()) crop.set(imgRect);
+            canvas.drawBitmap(base, null, imgRect, null);
+
+            // 裁剪区外压暗
+            Paint dim = new Paint();
+            dim.setColor(0x99000000);
+            Path outside = new Path();
+            outside.addRect(imgRect, Path.Direction.CW);
+            Path inner = new Path();
+            inner.addRect(crop, Path.Direction.CW);
+            outside.op(inner, Path.Op.DIFFERENCE);
+            canvas.drawPath(outside, dim);
+
+            Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
+            line.setColor(WHITE);
+            line.setStyle(Paint.Style.STROKE);
+            line.setStrokeWidth(dp(2));
+            canvas.drawRect(crop, line);
+
+            // 八个把手
+            Paint h = new Paint(Paint.ANTI_ALIAS_FLAG);
+            h.setColor(WHITE);
+            float r = dp(4);
+            float[] hx = {crop.left, crop.centerX(), crop.right, crop.right, crop.right, crop.centerX(), crop.left, crop.left};
+            float[] hy = {crop.top, crop.top, crop.top, crop.centerY(), crop.bottom, crop.bottom, crop.bottom, crop.centerY()};
+            for (int i = 0; i < 8; i++) canvas.drawCircle(hx[i], hy[i], r, h);
+        }
+
+        private int pickHandle(float x, float y) {
+            float t = dp(28);
+            float[] hx = {crop.left, crop.centerX(), crop.right, crop.right, crop.right, crop.centerX(), crop.left, crop.left};
+            float[] hy = {crop.top, crop.top, crop.top, crop.centerY(), crop.bottom, crop.bottom, crop.bottom, crop.centerY()};
+            for (int i = 0; i < 8; i++) {
+                if (Math.abs(x - hx[i]) < t && Math.abs(y - hy[i]) < t) return i;
+            }
+            if (crop.contains(x, y)) return 8;
+            return -1;
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent e) {
+            float x = e.getX();
+            float y = e.getY();
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    handle = pickHandle(x, y);
+                    lastX = x;
+                    lastY = y;
+                    return handle >= 0;
+                case MotionEvent.ACTION_MOVE:
+                    if (handle < 0) return false;
+                    float dx = x - lastX;
+                    float dy = y - lastY;
+                    lastX = x;
+                    lastY = y;
+                    float min = dp(64);
+                    if (handle == 8) {
+                        crop.offset(dx, dy);
+                        if (crop.left < imgRect.left) crop.offset(imgRect.left - crop.left, 0);
+                        if (crop.right > imgRect.right) crop.offset(imgRect.right - crop.right, 0);
+                        if (crop.top < imgRect.top) crop.offset(0, imgRect.top - crop.top);
+                        if (crop.bottom > imgRect.bottom) crop.offset(0, imgRect.bottom - crop.bottom);
+                    } else {
+                        if (handle == 0 || handle == 6 || handle == 7) crop.left = Math.max(imgRect.left, Math.min(crop.left + dx, crop.right - min));
+                        if (handle == 2 || handle == 3 || handle == 4) crop.right = Math.min(imgRect.right, Math.max(crop.right + dx, crop.left + min));
+                        if (handle == 0 || handle == 1 || handle == 2) crop.top = Math.max(imgRect.top, Math.min(crop.top + dy, crop.bottom - min));
+                        if (handle == 4 || handle == 5 || handle == 6) crop.bottom = Math.min(imgRect.bottom, Math.max(crop.bottom + dy, crop.top + min));
+                    }
+                    invalidate();
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    handle = -1;
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        /** 把视图坐标的裁剪框换算回图像坐标并执行裁剪。 */
+        void applyCropNow() {
+            if (base == null || imgRect.width() <= 0) return;
+            float sx = base.getWidth() / imgRect.width();
+            float sy = base.getHeight() / imgRect.height();
+            int left = Math.round((crop.left - imgRect.left) * sx);
+            int top = Math.round((crop.top - imgRect.top) * sy);
+            int w = Math.round(crop.width() * sx);
+            int h = Math.round(crop.height() * sy);
+            left = Math.max(0, Math.min(left, base.getWidth() - 1));
+            top = Math.max(0, Math.min(top, base.getHeight() - 1));
+            w = Math.max(1, Math.min(w, base.getWidth() - left));
+            h = Math.max(1, Math.min(h, base.getHeight() - top));
+            base = Bitmap.createBitmap(base, left, top, w, h);
+            pixelated = null;
+            blurred = null;
+            Matrix m = new Matrix();
+            m.postTranslate(-left, -top);
+            for (Op op : ops) op.transform(m);
+            for (Op op : redoOps) op.transform(m);
         }
     }
 
