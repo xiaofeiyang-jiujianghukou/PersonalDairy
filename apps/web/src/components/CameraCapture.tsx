@@ -36,14 +36,16 @@ export default function CameraCapture({
   const [secs, setSecs] = useState(0);
   const [canRecord, setCanRecord] = useState(true);
   const [torchOn, setTorchOn] = useState(false);
-  const [torchSupported, setTorchSupported] = useState(false);
+  const [torchSupported, setTorchSupported] = useState(true);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // ---------- 打开/切换摄像头 ----------
   const openStream = useCallback(async (mode: 'environment' | 'user') => {
     try {
       streamRef.current?.getTracks().forEach((t) => t.stop());
       const s = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: mode },
+        // 尽量要高清,避免预览糊;具体分辨率由设备给最接近的
+        video: { facingMode: mode, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: true,
       });
       streamRef.current = s;
@@ -52,10 +54,6 @@ export default function CameraCapture({
         v.srcObject = s;
         await v.play().catch(() => undefined);
       }
-      const track = s.getVideoTracks()[0];
-      const caps = (track?.getCapabilities?.() ?? {}) as { torch?: boolean };
-      setTorchSupported(Boolean(caps.torch));
-      setTorchOn(false);
       setReady(true);
       setErr(null);
     } catch (e) {
@@ -84,15 +82,20 @@ export default function CameraCapture({
     };
   }, []);
 
-  // ---------- 闪光灯(仅当设备支持 torch) ----------
+  // ---------- 闪光灯 ----------
+  // 不预先禁用:有些机型 getCapabilities() 不上报 torch,但 applyConstraints 实际可用。
+  // 所以一律可点,失败时才提示"不支持"。
   const toggleTorch = useCallback(async () => {
     const track = streamRef.current?.getVideoTracks()[0];
     if (!track) return;
+    const next = !torchOn;
     try {
-      await track.applyConstraints({ advanced: [{ torch: !torchOn }] } as unknown as MediaTrackConstraints);
-      setTorchOn((t) => !t);
+      await track.applyConstraints({ advanced: [{ torch: next }] } as unknown as MediaTrackConstraints);
+      setTorchOn(next);
+      setTorchSupported(true);
     } catch {
       setTorchSupported(false);
+      setNotice('这台设备不支持应用内闪光灯,可用系统相机拍');
     }
   }, [torchOn]);
 
@@ -221,14 +224,26 @@ export default function CameraCapture({
     };
   }, [canRecord, shootPhoto, startRecording, stopRecording]);
 
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 2200);
+    return () => clearTimeout(t);
+  }, [notice]);
+
   return (
     <div className="camera-overlay">
-      <video ref={videoRef} className="camera-video" playsInline muted autoPlay />
+      <video
+        ref={videoRef}
+        className={`camera-video${facing === 'user' ? ' mirror' : ''}`}
+        playsInline
+        muted
+        autoPlay
+      />
 
       {!ready && !err && <p className="camera-hint">正在打开相机…</p>}
       {err && <p className="camera-err">{err}</p>}
 
-      {/* 左上角:关闭 */}
+      {/* 左上角:关闭(半透明,不遮挡画面) */}
       <button className="camera-close" onClick={onClose} aria-label="关闭">
         ✕
       </button>
@@ -239,11 +254,10 @@ export default function CameraCapture({
         </p>
         <div className="camera-controls">
           <button
-            className={`camera-side-btn${torchOn ? ' on' : ''}`}
+            className={`camera-side-btn${torchOn ? ' on' : ''}${torchSupported ? '' : ' off'}`}
             onClick={() => void toggleTorch()}
-            disabled={!torchSupported}
             aria-label="闪光灯"
-            title={torchSupported ? '闪光灯' : '该设备不支持闪光灯'}
+            title="闪光灯"
           >
             ⚡
           </button>
@@ -267,6 +281,7 @@ export default function CameraCapture({
           </button>
         </div>
         {!canRecord && <p className="camera-tip warn">这台设备不支持应用内录像</p>}
+        {notice && <p className="camera-tip warn">{notice}</p>}
       </div>
     </div>
   );

@@ -306,30 +306,41 @@ button.ghost:disabled {
   overflow: hidden;
 }
 
+/* 关键:contain 而不是 cover —— cover 会把横向的相机流"铺满"竖屏,
+   裁掉绝大部分画面,看起来就是"放大了 N 倍、糊得看不清"。 */
 .camera-video {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   background: #000;
 }
 
+.camera-video.mirror {
+  transform: scaleX(-1); /* 前置镜头预览镜像,和微信一致 */
+}
+
+/* 左上角关闭:半透明、无实心底,不遮挡画面 */
 .camera-close {
   position: absolute;
-  top: calc(12px + env(safe-area-inset-top, 0px));
-  left: 14px;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+  top: calc(10px + env(safe-area-inset-top, 0px));
+  left: 12px;
+  width: 46px;
+  height: 46px;
   border: none;
-  background: rgba(0, 0, 0, 0.4);
-  color: #fff;
-  font-size: 18px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.8);
+  font-size: 26px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.camera-close:active {
+  color: #fff;
 }
 
 .camera-bottom {
@@ -358,22 +369,22 @@ button.ghost:disabled {
   height: 46px;
   border-radius: 50%;
   border: none;
-  background: rgba(0, 0, 0, 0.35);
+  background: rgba(255, 255, 255, 0.16);
   color: #fff;
   font-size: 20px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
 }
 
 .camera-side-btn.on {
   color: #ffd479;
 }
 
-.camera-side-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
+.camera-side-btn.off {
+  opacity: 0.55;
 }
 
 .camera-shutter-wrap {
