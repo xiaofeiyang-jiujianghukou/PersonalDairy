@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { authApi, clearToken, exportUrl } from '../api';
+import { authApi, clearToken, exportUrl, relaySyncNow, setLastSyncAt, setRelayCursor } from '../api';
 import SettingsModal from '../components/SettingsModal';
 import CompanionModal from '../components/CompanionModal';
 import ResolvedImage from '../components/ResolvedImage';
@@ -11,6 +11,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
   const [showSettings, setShowSettings] = useState(false);
   const [showCompanion, setShowCompanion] = useState(false);
   const [notice, setNotice] = useState('');
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     authApi
@@ -34,6 +35,22 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
     window.location.reload();
   }
 
+  /** 强制全量同步:归零游标 + 清空水位 → 本机全部重推、并从流头全量拉取(数据对不上时用)。 */
+  async function fullResync() {
+    setBusy(true);
+    setNotice('正在全量同步…');
+    try {
+      setLastSyncAt('');
+      setRelayCursor(0);
+      const r = await relaySyncNow();
+      setNotice(`同步完成:推送 ${r.pushed} 条,拉取合并 ${r.pulled} 条。`);
+    } catch (e) {
+      setNotice(`同步失败:${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const options: Array<{ label: string; desc: string; onClick: () => void; danger?: boolean }> = [
     { label: '修改个人信息', desc: '头像 / 昵称 / 账号', onClick: () => setShowSettings(true) },
     { label: '绑定邮箱', desc: '找回密码 / 解绑', onClick: () => setShowSettings(true) },
@@ -43,6 +60,11 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
     { label: 'AI 陪伴', desc: '读过你的日记,陪你聊', onClick: () => setShowCompanion(true) },
     { label: '数据备份 / 迁移', desc: '导出/导入迁移包', onClick: () => setShowSettings(true) },
     { label: '导出日记', desc: 'Markdown / JSON', onClick: () => window.open(exportUrl()) },
+    {
+      label: '强制全量同步',
+      desc: busy ? '同步中…' : '数据对不上时点这里(重推全部 + 从头全量拉取)',
+      onClick: () => void fullResync(),
+    },
     { label: '退出登录', desc: '', onClick: logout, danger: true },
   ];
 
