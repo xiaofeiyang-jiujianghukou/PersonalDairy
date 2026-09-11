@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import jsQR from 'jsqr';
+import { nativeCameraAvailable, scanWithNativeCamera } from '../lib/nativeCamera';
 import QRCode from 'qrcode';
 import { encryptObject, generateSyncKey } from '@diary/shared/syncCrypto';
 import { autoSync } from '../lib/syncAuto';
@@ -70,10 +71,68 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
     }
   }
 
+  /** 处理扫到的内容(diary-sync: / diary-login: / 旧的 uid+key 格式)。 */
+  function handleScanData(data: string) {
+    if (data.startsWith('diary-sync:')) {
+      const key = data.slice('diary-sync:'.length);
+      setSyncKey(key);
+      setPartner('');
+      stopCamera();
+      setMsg('已配对:同步密钥已建立,正在自动同步…');
+      void autoSync().then((r) => {
+        setMsg(r.ok ? `同步完成:拉取并合并 ${r.pulled ?? 0} 条。` : '同步失败,请检查网络或同步密钥。');
+      });
+      return;
+    }
+    if (data.startsWith('diary-login:')) {
+      const qrId = data.slice('diary-login:'.length);
+      stopCamera();
+      setMsg('正在确认电脑登录…');
+      void (async () => {
+        try {
+          // 顺带把本机同步密钥用一次性 qrId 加密交给电脑端 → 电脑登录后即可立即同步
+          const myKey = getSyncKey();
+          const encSyncKey = myKey ? JSON.stringify(await encryptObject(qrId, myKey)) : undefined;
+          await authApi.scanConfirm(qrId, encSyncKey);
+          setMsg(encSyncKey ? '已确认:电脑已登录并接入同步 ✅' : '已确认:电脑登录成功 ✅');
+        } catch (e) {
+          setErr((e as Error).message);
+        }
+      })();
+      return;
+    }
+    const [u, k] = data.split('\n');
+    if (u) {
+      setSyncPartner(u);
+      setPartner(u);
+    }
+    if (k) setSyncKey(k);
+    stopCamera();
+    setMsg(`已配对:${u ?? data}`);
+  }
+
   async function startScan() {
     setErr(null);
     setMsg(null);
     setHostQr(null);
+
+    // 手机 App:直接用我们自己的原生相机扫码(相机界面统一,识别更稳)
+    if (nativeCameraAvailable()) {
+      setScanning(true);
+      try {
+        const text = await scanWithNativeCamera();
+        if (text) handleScanData(text);
+        else setMsg('没有识别到二维码,可以再试一次。');
+      } catch {
+        // 用户取消(✕)不算错误
+        setMsg(null);
+      } finally {
+        setScanning(false);
+      }
+      return;
+    }
+
+    // 浏览器 / 桌面端兜底:原来的网页相机
     setScanning(true);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
@@ -99,43 +158,7 @@ export default function SyncModal({ onClose }: { onClose: () => void }) {
           const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
           const code = jsQR(img.data, img.width, img.height);
           if (code && code.data) {
-            const data = code.data;
-            if (data.startsWith('diary-sync:')) {
-              const key = data.slice('diary-sync:'.length);
-              setSyncKey(key);
-              setPartner('');
-              stopCamera();
-              setMsg('已配对:同步密钥已建立,正在自动同步…');
-              void autoSync().then((r) => {
-                setMsg(r.ok ? `同步完成:拉取并合并 ${r.pulled ?? 0} 条。` : '同步失败,请检查网络或同步密钥。');
-              });
-              return;
-            }
-            if (data.startsWith('diary-login:')) {
-              const qrId = data.slice('diary-login:'.length);
-              stopCamera();
-              setMsg('正在确认电脑登录…');
-              void (async () => {
-                try {
-                  // 顺带把本机同步密钥用一次性 qrId 加密交给电脑端 → 电脑登录后即可立即同步
-                  const myKey = getSyncKey();
-                  const encSyncKey = myKey ? JSON.stringify(await encryptObject(qrId, myKey)) : undefined;
-                  await authApi.scanConfirm(qrId, encSyncKey);
-                  setMsg(encSyncKey ? '已确认:电脑已登录并接入同步 ✅' : '已确认:电脑登录成功 ✅');
-                } catch (e) {
-                  setErr((e as Error).message);
-                }
-              })();
-              return;
-            }
-            const [u, k] = data.split('\n');
-            if (u) {
-              setSyncPartner(u);
-              setPartner(u);
-            }
-            if (k) setSyncKey(k);
-            stopCamera();
-            setMsg(`已配对:${u ?? data}`);
+            handleScanData(code.data);
             return;
           }
         }

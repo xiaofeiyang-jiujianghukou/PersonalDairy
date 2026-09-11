@@ -69,6 +69,43 @@ public class NativeCameraPlugin extends Plugin {
         startActivityForResult(call, intent, "cameraResult");
     }
 
+    /** 扫码:用同一个原生相机(扫码模式,ML Kit 识别二维码),返回识别到的文本。 */
+    @PluginMethod
+    public void scan(PluginCall call) {
+        if (getPermissionState("camera") != PermissionState.GRANTED) {
+            requestPermissionForAlias("camera", call, "scanPermCallback");
+            return;
+        }
+        launchScan(call);
+    }
+
+    @PermissionCallback
+    private void scanPermCallback(PluginCall call) {
+        if (getPermissionState("camera") != PermissionState.GRANTED) {
+            call.reject("相机权限被拒绝");
+            return;
+        }
+        launchScan(call);
+    }
+
+    private void launchScan(PluginCall call) {
+        Intent intent = new Intent(getContext(), NativeCameraActivity.class);
+        intent.putExtra(NativeCameraActivity.EXTRA_MODE, "scan");
+        startActivityForResult(call, intent, "scanResult");
+    }
+
+    @ActivityCallback
+    private void scanResult(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+        if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
+            call.reject("已取消");
+            return;
+        }
+        JSObject ret = new JSObject();
+        ret.put("text", result.getData().getStringExtra(NativeCameraActivity.EXTRA_TEXT));
+        call.resolve(ret);
+    }
+
     @ActivityCallback
     private void cameraResult(PluginCall call, ActivityResult result) {
         if (call == null) return;

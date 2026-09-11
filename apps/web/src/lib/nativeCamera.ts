@@ -7,6 +7,7 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
  */
 interface NativeCameraPlugin {
   open(): Promise<{ path?: string; mime?: string }>;
+  scan(): Promise<{ text?: string }>;
   readFile(options: { path: string; mime?: string }): Promise<{ data?: string; mime?: string }>;
 }
 
@@ -57,4 +58,13 @@ export async function takeWithNativeCamera(): Promise<File | null> {
   const ab = new ArrayBuffer(bytes.length);
   new Uint8Array(ab).set(bytes);
   return new File([ab], name, { type: data.mime || r?.mime || 'application/octet-stream' });
+}
+
+/**
+ * 用原生相机扫码(和拍照同一个相机界面,ML Kit 识别二维码)。
+ * 返回识别到的文本;用户取消时返回 null。
+ */
+export async function scanWithNativeCamera(): Promise<string | null> {
+  const r = await NativeCamera.scan();
+  return r?.text ?? null;
 }
