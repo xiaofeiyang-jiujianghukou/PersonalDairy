@@ -182,6 +182,8 @@ export interface DeviceInfo {
   watermark: string;
   /** 按来源设备的水位向量(协商区间用)。 */
   vector: Record<string, string>;
+  /** 该端本地条目数(含墓碑),用于"数量对不上就补全"的兜底。 */
+  count: number;
   loginAt: number;
   lastSeen: number;
 }
@@ -203,6 +205,7 @@ export async function deviceList(uid: number): Promise<DeviceInfo[]> {
         deviceId,
         watermark: String(o.watermark ?? ''),
         vector: (o.vector ?? {}) as Record<string, string>,
+        count: Number(o.count ?? 0) || 0,
         loginAt: Number(o.loginAt ?? 0) || 0,
         lastSeen: Number(o.lastSeen ?? 0) || 0,
       });
@@ -223,6 +226,7 @@ export async function deviceRegister(
   watermark: string,
   isLogin = false,
   vector: Record<string, string> = {},
+  count = 0,
 ): Promise<DeviceInfo[]> {
   const r = c();
   const now = Date.now();
@@ -236,7 +240,7 @@ export async function deviceRegister(
       /* 忽略 */
     }
   }
-  const info: DeviceInfo = { deviceId, watermark, vector, loginAt, lastSeen: now };
+  const info: DeviceInfo = { deviceId, watermark, vector, count, loginAt, lastSeen: now };
   await r.hset(regKey(uid), deviceId, JSON.stringify(info));
   await r.expire(regKey(uid), REG_TTL);
   await r.sadd(devKey(uid), deviceId);
@@ -249,8 +253,9 @@ export async function deviceTouch(
   deviceId: string,
   watermark: string,
   vector: Record<string, string> = {},
+  count = 0,
 ): Promise<DeviceInfo[]> {
-  return deviceRegister(uid, deviceId, watermark, false, vector);
+  return deviceRegister(uid, deviceId, watermark, false, vector, count);
 }
 
 /**

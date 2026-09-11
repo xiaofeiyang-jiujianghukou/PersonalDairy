@@ -109,7 +109,9 @@ export async function listImageIds(): Promise<string[]> {
 }
 
 const nowIso = () => new Date().toISOString();
-const DEVICE = 'phone';
+// 真实设备标识(曾写死为 'phone' → 电脑端条目被标成手机来源,水位向量失真)
+import { getDeviceId } from './device';
+const DEVICE = (): string => getDeviceId();
 
 /** 基于任意后端,构建与远端 api 同签名的方法(本地优先)。 */
 export function createLocalApi(backend: LocalBackend) {
@@ -137,7 +139,7 @@ export function createLocalApi(backend: LocalBackend) {
         id: uid(),
         date: input.date,
         content: input.content,
-        deviceId: DEVICE,
+        deviceId: DEVICE(),
         createdAt: ts,
         updatedAt: ts,
         deletedAt: null,
@@ -151,7 +153,7 @@ export function createLocalApi(backend: LocalBackend) {
       await withWrite((all) =>
         all.map((e) => {
           if (e.id !== id) return e;
-          updated = { ...e, date: input.date ?? e.date, content: input.content ?? e.content, deviceId: DEVICE, updatedAt: ts };
+          updated = { ...e, date: input.date ?? e.date, content: input.content ?? e.content, deviceId: DEVICE(), updatedAt: ts };
           return updated;
         }),
       );
@@ -164,7 +166,7 @@ export function createLocalApi(backend: LocalBackend) {
         all.map((e) => {
           if (e.id !== id || e.deletedAt) return e;
           ok = true;
-          return { ...e, deletedAt: ts, deviceId: DEVICE, updatedAt: ts };
+          return { ...e, deletedAt: ts, deviceId: DEVICE(), updatedAt: ts };
         }),
       );
       return { ok };

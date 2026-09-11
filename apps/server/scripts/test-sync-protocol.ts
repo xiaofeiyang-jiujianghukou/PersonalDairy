@@ -90,12 +90,23 @@ async function http<T>(p: string, o: HttpOpts = {}): Promise<T> {
 function makeTransport(deviceId: string, token: string): SyncTransport {
   return {
     hello: (p) =>
-      http('/api/relay/hello', { body: { from: deviceId, watermark: p.watermark, vector: p.vector }, token }),
+      http('/api/relay/hello', {
+        body: { from: deviceId, watermark: p.watermark, vector: p.vector, count: p.count },
+        token,
+      }),
     heartbeat: (p) =>
-      http('/api/relay/heartbeat', { body: { from: deviceId, watermark: p.watermark, vector: p.vector }, token }),
+      http('/api/relay/heartbeat', {
+        body: { from: deviceId, watermark: p.watermark, vector: p.vector, count: p.count },
+        token,
+      }),
     notify: async (p) => {
-      const payload = JSON.stringify(await encryptObject(SYNC_KEY, { watermark: p.watermark, vector: p.vector }));
-      await http('/api/relay/notify', { body: { from: deviceId, watermark: p.watermark, vector: p.vector, payload }, token });
+      const payload = JSON.stringify(
+        await encryptObject(SYNC_KEY, { watermark: p.watermark, vector: p.vector, count: p.count }),
+      );
+      await http('/api/relay/notify', {
+        body: { from: deviceId, watermark: p.watermark, vector: p.vector, count: p.count, payload },
+        token,
+      });
     },
     need: async (p) => {
       const payload = JSON.stringify(
@@ -119,6 +130,7 @@ class Device {
   readonly box: Stored = { entries: new Map(), images: new Map() };
   readonly engine: SyncEngine;
   cursor = 0;
+  pushedAt = '';
   private seq = 0;
 
   constructor(id: string, token: string) {
@@ -135,6 +147,10 @@ class Device {
         getCursor: () => this.cursor,
         setCursor: (n) => {
           this.cursor = n;
+        },
+        getPushedAt: () => this.pushedAt,
+        setPushedAt: (v) => {
+          this.pushedAt = v;
         },
       },
       log: (m) => console.log(`      ${m}`),
@@ -390,6 +406,55 @@ async function main(): Promise<void> {
   await F.engine.onLocalWrite();
   await pump([D, E, F], 12, '附加');
   ok(D.has(f2.id) && E.has(f2.id), 'D/E 都收到了主端 F 的新数据');
+
+  // ================= 场景 4:条目数兜底(水位向量"看起来齐了"其实缺数据) =================
+  console.log('\n[场景 4] 水位向量看起来满足、实际缺数据 → 靠"条目数对不上"兜底补全');
+  const token4 = await freshToken();
+  const G = new Device('devGGGGG-0000-0000-0000-000000000007', token4);
+  const H = new Device('devHHHHH-0000-0000-0000-000000000008', token4);
+  // H 有同来源('phone',模拟历史遗留标记)的两条:旧 t1、新 t2
+  const ph1 = H.write('场景4:来自 phone 的旧条目', today, '2026-02-01T00:00:01.000Z');
+  const ph2 = H.write('场景4:来自 phone 的新条目', today, '2026-02-01T00:00:02.000Z');
+  H.box.entries.set(ph1.id, { ...ph1, deviceId: 'phone' });
+  H.box.entries.set(ph2.id, { ...ph2, deviceId: 'phone' });
+  // G 已有较新的那条(**同一个 id**,真实场景里条目 id 是跨端一致的),但缺旧的那条:
+  // 两端向量都是 {phone:t2},单看水位发现不了缺口 → 只能靠"条目数对不上"发现。
+  G.box.entries.set(ph2.id, ph2);
+  await G.engine.onLogin();
+  await H.engine.onLogin();
+  await pump([G, H], 14, '场景4');
+  ok(G.has(ph1.id), 'G 拿到了缺失的旧条目本体(水位看不出缺口,靠条目数兜底)');
+  ok(G.count() === H.count(), `G/H 条目数一致(${G.count()} vs ${H.count()})`);
+
+  // ================= 场景 5:旧版本客户端仍能收到更新(兼容广播) =================
+  console.log('\n[场景 5] 旧版本客户端(只拉广播数据、不会索取区间)→ 仍能收到新条目');
+  const token5 = await freshToken();
+  const I = new Device('devIIIII-0000-0000-0000-000000000009', token5);
+  await I.engine.onLogin();
+  // 模拟旧客户端:只拉广播 data 消息并合并,从不发 hello/need
+  const legacyEntries = new Map<string, DiaryEntry>();
+  let legacyCursor = 0;
+  async function legacyPull(): Promise<void> {
+    const page = await http<{
+      messages: Array<{ id: number; from: string; kind: string; to: string; payload: string }>;
+      lastId: number;
+    }>(`/api/relay/pull?from=legacyDevice&after=${legacyCursor}&limit=50`, { token: token5 });
+    for (const m of page.messages) {
+      if (m.kind !== 'data') continue;
+      try {
+        const dec = (await decryptObject(SYNC_KEY, JSON.parse(m.payload))) as { entries?: DiaryEntry[] };
+        for (const e of dec.entries ?? []) legacyEntries.set(e.id, e);
+      } catch {
+        /* 旧客户端解不开就跳过 */
+      }
+    }
+    legacyCursor = Math.max(legacyCursor, page.lastId);
+  }
+  const i1 = I.write('场景5:新协议时代写的条目', today);
+  await I.engine.onLocalWrite(); // 同时会做一次"兼容广播"
+  await pump([I], 6, '场景5');
+  await legacyPull();
+  ok(legacyEntries.has(i1.id), '旧客户端通过兼容广播收到了新条目(不会被新协议饿死)');
 
   console.log(`\n同步合并新增(put 且原本不存在)共 ${putLog.length} 条:`);
   for (const l of putLog) console.log(`   ${l}`);

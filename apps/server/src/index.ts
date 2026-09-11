@@ -468,26 +468,28 @@ function withLeader(devices: DeviceInfo[]): { leader: string | null; devices: De
 /** 登录/冷启动握手:登记本端水位与登录时刻,返回其它端水位 + 主端。 */
 app.post('/api/relay/hello', async (req, reply) => {
   const user = (req as AuthedRequest).user!;
-  const { from, watermark, vector } = (req.body ?? {}) as {
+  const { from, watermark, vector, count } = (req.body ?? {}) as {
     from?: string;
     watermark?: string;
     vector?: Record<string, string>;
+    count?: number;
   };
   if (typeof from !== 'string' || !from) return reply.code(400).send({ error: '缺少 from' });
-  const devices = await deviceRegister(user.id, from, String(watermark ?? ''), true, vector ?? {});
+  const devices = await deviceRegister(user.id, from, String(watermark ?? ''), true, vector ?? {}, Number(count) || 0);
   return withLeader(devices);
 });
 
 /** 心跳:定期上报水位(幂等,不改 loginAt),顺带拿回最新设备表与主端。 */
 app.post('/api/relay/heartbeat', async (req, reply) => {
   const user = (req as AuthedRequest).user!;
-  const { from, watermark, vector } = (req.body ?? {}) as {
+  const { from, watermark, vector, count } = (req.body ?? {}) as {
     from?: string;
     watermark?: string;
     vector?: Record<string, string>;
+    count?: number;
   };
   if (typeof from !== 'string' || !from) return reply.code(400).send({ error: '缺少 from' });
-  const devices = await deviceTouch(user.id, from, String(watermark ?? ''), vector ?? {});
+  const devices = await deviceTouch(user.id, from, String(watermark ?? ''), vector ?? {}, Number(count) || 0);
   return withLeader(devices);
 });
 
@@ -500,14 +502,15 @@ app.get('/api/relay/devices', async (req) => {
 /** 我更新了(广播,携带新水位 xxxa)。仅元数据,不含日记内容。 */
 app.post('/api/relay/notify', async (req, reply) => {
   const user = (req as AuthedRequest).user!;
-  const { from, watermark, payload, vector } = (req.body ?? {}) as {
+  const { from, watermark, payload, vector, count } = (req.body ?? {}) as {
     from?: string;
     watermark?: string;
     payload?: string;
     vector?: Record<string, string>;
+    count?: number;
   };
   if (typeof from !== 'string' || !from) return reply.code(400).send({ error: '缺少 from' });
-  await deviceTouch(user.id, from, String(watermark ?? ''), vector ?? {});
+  await deviceTouch(user.id, from, String(watermark ?? ''), vector ?? {}, Number(count) || 0);
   const body = typeof payload === 'string' && payload ? payload : JSON.stringify({ plain: { watermark } });
   await relayPush(user.id, from, body, 'notify', '');
   wakeRelayWaiters(user.id, from, '');

@@ -10,6 +10,7 @@ import { reconcileFull } from '@diary/shared/sync';
 import { extractMediaIds } from '@diary/shared/images';
 import { decryptObject, deriveSyncKey, encryptObject } from '@diary/shared/syncCrypto';
 import { emitDataChanged } from './lib/dataEvents';
+import { getDeviceId } from './lib/device';
 import { SyncEngine, type SyncStore, type SyncTransport, type DiaryEntry as EngineEntry } from '@diary/shared/syncEngine';
 import { IdbBackend, createLocalApi, listImageIds, type LocalBackend } from './lib/localStore';
 import { exportMediaFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
@@ -463,19 +464,8 @@ export async function syncNow(): Promise<{ applied: number; pulled: number; part
   return { applied: res.applied ?? 0, pulled: toWrite.length, partner };
 }
 
-const DEVICE_ID_KEY = 'diary.deviceId';
-function getDeviceId(): string {
-  try {
-    let id = localStorage.getItem(DEVICE_ID_KEY) ?? '';
-    if (!id) {
-      id = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
-      localStorage.setItem(DEVICE_ID_KEY, id);
-    }
-    return id;
-  } catch {
-    return 'anon';
-  }
-}
+// deviceId 统一由 lib/device.ts 提供(与本地条目的溯源标记同源)
+
 
 // ---------------- 同步协议引擎装配(水位线协商 + 区间补传 + 主端选举) ----------------
 // 协议实现见 packages/shared/src/syncEngine.ts;这里只负责把它接到 HTTP / 本地库 / 加解密。
@@ -490,18 +480,20 @@ function makeEngineTransport(deviceId: string): SyncTransport {
     hello: (p) =>
       http<{ leader: string | null; devices: [] }>('/api/relay/hello', {
         method: 'POST',
-        body: JSON.stringify({ from: deviceId, watermark: p.watermark, vector: p.vector }),
+        body: JSON.stringify({ from: deviceId, watermark: p.watermark, vector: p.vector, count: p.count }),
       }),
     heartbeat: (p) =>
       http<{ leader: string | null; devices: [] }>('/api/relay/heartbeat', {
         method: 'POST',
-        body: JSON.stringify({ from: deviceId, watermark: p.watermark, vector: p.vector }),
+        body: JSON.stringify({ from: deviceId, watermark: p.watermark, vector: p.vector, count: p.count }),
       }),
     notify: async (p) => {
-      const payload = JSON.stringify(await encryptObject(requireSyncKey(), { watermark: p.watermark, vector: p.vector }));
+      const payload = JSON.stringify(
+        await encryptObject(requireSyncKey(), { watermark: p.watermark, vector: p.vector, count: p.count }),
+      );
       await http('/api/relay/notify', {
         method: 'POST',
-        body: JSON.stringify({ from: deviceId, watermark: p.watermark, vector: p.vector, payload }),
+        body: JSON.stringify({ from: deviceId, watermark: p.watermark, vector: p.vector, count: p.count, payload }),
       });
     },
     need: async (p) => {
@@ -569,7 +561,13 @@ export function getSyncEngine(): SyncEngine {
       encrypt: (o) => encryptObject(requireSyncKey(), o),
       decrypt: (o) => decryptObject(requireSyncKey(), o as never),
     },
-    state: { getCursor: () => getRelayCursor(), setCursor: (n) => setRelayCursor(n) },
+    state: {
+      getCursor: () => getRelayCursor(),
+      setCursor: (n) => setRelayCursor(n),
+      // 广播水位沿用既有的 lastSyncAt(老版本就有,升级后接着用,避免全量重推)
+      getPushedAt: () => getLastSyncAt(),
+      setPushedAt: (v) => setLastSyncAt(v),
+    },
     onChange: () => emitDataChanged(),
     log: (m) => {
       if (localStorage.getItem('diary.debugSync') === '1') console.log(m);

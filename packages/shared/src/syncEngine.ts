@@ -40,6 +40,8 @@ export interface PeerDevice {
    * 只有向量才能发现"我缺了别人更早写的那批数据"(单标量水位会把旧数据当成对方已有)。
    */
   vector?: Record<string, string>;
+  /** 对方本地条目数(含墓碑)。用于"数量对不上就必须补全"的兜底判断。 */
+  count?: number;
   loginAt: number;
   lastSeen: number;
   online?: boolean;
@@ -63,13 +65,15 @@ export interface SyncTransport {
     deviceId: string;
     watermark: string;
     vector: WatermarkVector;
+    count: number;
   }): Promise<{ leader: string | null; devices: PeerDevice[] }>;
   heartbeat(p: {
     deviceId: string;
     watermark: string;
     vector: WatermarkVector;
+    count: number;
   }): Promise<{ leader: string | null; devices: PeerDevice[] }>;
-  notify(p: { deviceId: string; watermark: string; vector: WatermarkVector }): Promise<void>;
+  notify(p: { deviceId: string; watermark: string; vector: WatermarkVector; count: number }): Promise<void>;
   /** 请求 origin 这台来源设备在 (fromWatermark, toWatermark] 区间内的数据。 */
   need(p: {
     deviceId: string;
@@ -102,7 +106,13 @@ export interface SyncEngineOptions {
   transport: SyncTransport;
   store: SyncStore;
   cipher: SyncCipher;
-  state: { getCursor(): number; setCursor(n: number): void };
+  state: {
+    getCursor(): number;
+    setCursor(n: number): void;
+    /** 广播水位(上次"兼容广播"推到哪里)。用于只推增量,避免全量重推。 */
+    getPushedAt?(): string;
+    setPushedAt?(v: string): void;
+  };
   /** 合并了对端条目后回调(用于刷新界面)。 */
   onChange?: () => void;
   /** 诊断日志。 */
@@ -148,6 +158,11 @@ export class SyncEngine {
     return wm;
   }
 
+  /** 本地条目数(含墓碑;同步收敛后各端应一致,不一致说明有缺口)。 */
+  async count(): Promise<number> {
+    return (await this.o.store.all()).length;
+  }
+
   /** 水位向量:按来源设备分别记录"我有的最新时间点"。(条目自带 origin deviceId) */
   async watermarkVector(): Promise<WatermarkVector> {
     const all = await this.o.store.all();
@@ -167,6 +182,11 @@ export class SyncEngine {
 
   // ---------------- 写入端:广播"我更新了" ----------------
   async onLocalWrite(): Promise<void> {
+    // (a) 兼容广播:把"上次广播之后的新数据"推到中继。
+    //     新协议靠对端来索取区间,但旧版本客户端只会拉广播数据,不广播它们就收不到更新;
+    //     顺带也让中继自己保留一份近期增量,新设备即使没有在线对端也能恢复。
+    await this.broadcastDelta();
+    // (b) 通知在线端(新协议:对端按需索取区间)
     const wm = await this.watermark();
     if (!wm || wm === this.lastNotified) return;
     this.lastNotified = wm;
@@ -175,6 +195,7 @@ export class SyncEngine {
         deviceId: this.o.deviceId,
         watermark: wm,
         vector: await this.watermarkVector(),
+        count: await this.count(),
       });
       this.log(`notify 水位=${wm}`);
     } catch (e) {
@@ -183,13 +204,53 @@ export class SyncEngine {
     }
   }
 
+  /** 把 pushedAt 之后的新条目分小批广播到中继(不带 to = 同账号所有端可见)。 */
+  async broadcastDelta(): Promise<number> {
+    const since = this.o.state.getPushedAt?.() ?? '';
+    const all = await this.o.store.all();
+    const delta = all
+      .filter((e) => e.updatedAt && (!since || e.updatedAt > since))
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : 1));
+    if (!delta.length) return 0;
+    const localImageIds = await this.o.store.localMediaIds();
+    const max = this.o.chunkBytes ?? 192 * 1024;
+    let batch: DiaryEntry[] = [];
+    let size = 0;
+    let sent = 0;
+    const flush = async (): Promise<void> => {
+      if (!batch.length) return;
+      const ids = new Set<string>();
+      for (const e of batch) for (const id of mediaIdsOf(e.content)) ids.add(id);
+      const images = ids.size ? await this.o.store.exportMedia([...ids]) : [];
+      const enc = await this.o.cipher.encrypt({ entries: batch, images, localImageIds });
+      await this.o.transport.push({ deviceId: this.o.deviceId, to: '', payload: JSON.stringify(enc) });
+      sent += batch.length;
+      batch = [];
+      size = 0;
+    };
+    for (const e of delta) {
+      const ids = mediaIdsOf(e.content);
+      const imgs = ids.length ? await this.o.store.exportMedia(ids) : [];
+      const esize = JSON.stringify(e).length + imgs.reduce((s2, x) => s2 + x.dataUrl.length, 0);
+      if (batch.length && size + esize > max) await flush();
+      batch.push(e);
+      size += esize;
+    }
+    await flush();
+    const last = delta[delta.length - 1]?.updatedAt ?? since;
+    this.o.state.setPushedAt?.(last);
+    this.log(`广播增量 ${sent} 条(截至 ${last})`);
+    return sent;
+  }
+
   // ---------------- 登录/上线:握手 + 按需补齐 ----------------
   async onLogin(): Promise<{ requested: number; leader: string | null }> {
     const wm = await this.watermark();
     const vector = await this.watermarkVector();
+    const count = await this.count();
     let devices: PeerDevice[] = [];
     try {
-      const r = await this.o.transport.hello({ deviceId: this.o.deviceId, watermark: wm, vector });
+      const r = await this.o.transport.hello({ deviceId: this.o.deviceId, watermark: wm, vector, count });
       this.leader = r.leader;
       devices = r.devices ?? [];
     } catch (e) {
@@ -218,6 +279,14 @@ export class SyncEngine {
         return a.deviceId < b.deviceId ? -1 : 1;
       });
     let n = 0;
+    // 兜底:条目数对不上 → 说明光靠水位向量仍有缺口(例如历史数据来源标记不准),
+    // 向"条目数更多的端"(优先主端)要一次全量(origin='' = 不限来源,from='' = 从头)。
+    const myCount = await this.count();
+    const fuller = peers.find((d) => (d.count ?? 0) > myCount);
+    if (fuller) {
+      await this.requestRange(fuller.deviceId, '', '', '');
+      n++;
+    }
     for (const d of peers) {
       const v = d.vector ?? {};
       for (const [origin, their] of Object.entries(v)) {
@@ -266,6 +335,7 @@ export class SyncEngine {
         deviceId: this.o.deviceId,
         watermark: wm,
         vector: await this.watermarkVector(),
+        count: await this.count(),
       });
       this.leader = r.leader;
     } catch {
@@ -457,17 +527,18 @@ export class SyncEngine {
     try {
       await this.onLogin();
       const { merged } = await this.drain();
-      const pushed = await this.serveNote();
+      const pushed = await this.serveNote(); // 兜底:本地有新数据就通知 + 广播增量
       return { pushed, pulled: merged };
     } finally {
       this.busy = false;
     }
   }
 
-  /** 兜底:本地若有未广播过的更新,补一次 notify。 */
+  /** 兜底:本地若有未广播过的更新,补一次"广播增量 + notify"。 */
   private async serveNote(): Promise<number> {
     const wm = await this.watermark();
-    if (wm && wm !== this.lastNotified) {
+    const pushedAt = this.o.state.getPushedAt?.() ?? '';
+    if (wm && (wm !== this.lastNotified || wm > pushedAt)) {
       await this.onLocalWrite();
       return 1;
     }
