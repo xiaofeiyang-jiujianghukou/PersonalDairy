@@ -27,12 +27,71 @@ export default function BlocksEditor({
   const photoRef = useRef<HTMLInputElement>(null); // 拍摄照片 -> ACTION_IMAGE_CAPTURE
   const videoRef = useRef<HTMLInputElement>(null); // 拍摄视频 -> ACTION_VIDEO_CAPTURE
   const pickRef = useRef<HTMLInputElement>(null); // 从相册选择(照片或视频)
-  // 「拍摄」长按判定:用定时器置标志位,在 pointerup(仍带用户激活)里真正调起输入框。
-  // 若用 setTimeout 回调直接 click(),浏览器会以"缺少用户激活"拦掉文件选择器。
-  const longPressRef = useRef(false);
-  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [holding, setHolding] = useState(false);
+  const shootRef = useRef<HTMLButtonElement | null>(null); // 「拍摄」按钮(挂原生非 passive 触摸监听)
+  const [holding, setHolding] = useState(false); // 长按中(显示"松手开始录像")
   const taRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+
+  /**
+   * 「拍摄」轻点拍照 / 长按录像。
+   * 必须用**非 passive 的原生 touch 监听 + preventDefault**:Android WebView 默认会把
+   * "按住"认领成手势(长按/选择),于是只发 pointercancel、不发 pointerup,
+   * 长按永远收不到"松手"。React 的 onTouchStart 是被动的,preventDefault 无效。
+   * 真正的 input.click() 仍在 touchend 里执行(保留用户激活,否则文件选择器会被拦)。
+   */
+  useEffect(() => {
+    if (!mediaMenu) return;
+    const el = shootRef.current;
+    if (!el) return;
+    let long = false;
+    let done = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const start = (e: Event) => {
+      if (e.cancelable) e.preventDefault();
+      done = false;
+      long = false;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        long = true;
+        setHolding(true);
+      }, 400);
+    };
+    const finish = (e: Event) => {
+      if (e.cancelable) e.preventDefault();
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (done) return;
+      done = true;
+      const wasLong = long;
+      long = false;
+      setHolding(false);
+      setMediaMenu(false);
+      if (wasLong) videoRef.current?.click();
+      else photoRef.current?.click();
+    };
+    const cancel = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      long = false;
+      setHolding(false);
+    };
+    el.addEventListener('touchstart', start, { passive: false });
+    el.addEventListener('touchend', finish, { passive: false });
+    el.addEventListener('touchcancel', cancel, { passive: false });
+    el.addEventListener('mousedown', start);
+    el.addEventListener('mouseup', finish);
+    return () => {
+      el.removeEventListener('touchstart', start);
+      el.removeEventListener('touchend', finish);
+      el.removeEventListener('touchcancel', cancel);
+      el.removeEventListener('mousedown', start);
+      el.removeEventListener('mouseup', finish);
+      if (timer) clearTimeout(timer);
+    };
+  }, [mediaMenu]);
 
   useEffect(() => {
     for (const b of blocks) {
@@ -192,43 +251,11 @@ export default function BlocksEditor({
         </button>
       </div>
 
-      {/* 微信式:一个「拍摄」——轻点拍照、长按录像;外加从相册选择。
-          判定放在 pointerup(仍属用户激活),否则调起文件选择器会被浏览器拦截。 */}
+      {/* 微信式:一个「拍摄」——轻点拍照、长按录像;外加从相册选择。 */}
       {mediaMenu && (
         <div className="media-sheet-mask" onClick={() => setMediaMenu(false)}>
           <div className="media-sheet" onClick={(e) => e.stopPropagation()}>
-            <button
-              className="media-sheet-item shoot"
-              onPointerDown={() => {
-                longPressRef.current = false;
-                if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
-                holdTimerRef.current = setTimeout(() => {
-                  longPressRef.current = true;
-                  setHolding(true); // 给出可见反馈:松手开始录像
-                }, 400);
-              }}
-              onPointerUp={() => {
-                if (holdTimerRef.current) {
-                  clearTimeout(holdTimerRef.current);
-                  holdTimerRef.current = null;
-                }
-                const wasLong = longPressRef.current;
-                longPressRef.current = false;
-                setHolding(false);
-                setMediaMenu(false);
-                if (wasLong) videoRef.current?.click(); // 长按 → 录像
-                else photoRef.current?.click(); // 轻点 → 拍照
-              }}
-              onPointerCancel={() => {
-                if (holdTimerRef.current) {
-                  clearTimeout(holdTimerRef.current);
-                  holdTimerRef.current = null;
-                }
-                longPressRef.current = false;
-                setHolding(false);
-              }}
-              onContextMenu={(e) => e.preventDefault()}
-            >
+            <button ref={shootRef} className="media-sheet-item shoot" onContextMenu={(e) => e.preventDefault()}>
               <span className="media-sheet-main">{holding ? '松手开始录像' : '拍摄'}</span>
               <span className="media-sheet-sub">
                 {holding ? '● 录像' : '轻点拍照 · 长按录像'}
