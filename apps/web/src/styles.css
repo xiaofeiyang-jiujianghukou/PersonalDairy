@@ -290,6 +290,13 @@ button.ghost:disabled {
   background: #f2ede4;
 }
 
+/* 长按拍摄:必须 touch-action:none,否则按住时会被浏览器判成手势并发 pointercancel,
+   导致收不到"松开"事件,长按录像就永远不触发。 */
+.media-sheet-item.shoot {
+  touch-action: none;
+  -ms-touch-action: none;
+}
+
 .media-sheet-item.cancel {
   margin-top: 6px;
   border-top: 1px solid var(--line);
