@@ -450,6 +450,36 @@ async function main(): Promise<void> {
   await legacyPull();
   ok(legacyEntries.has(i1.id), '旧客户端通过兼容广播收到了新条目(不会被新协议饿死)');
 
+  // ================= 场景 6:异常未来时间(2099 墓碑)不得顶高水位 =================
+  console.log('\n[场景 6] 库里存在 2099 年墓碑(早期 LWW 测试遗留)→ 不得顶高水位、不得让区间协商失效');
+  const token6 = await freshToken();
+  const J = new Device('devJJJJJ-0000-0000-0000-000000000010', token6);
+  const K = new Device('devKKKKK-0000-0000-0000-000000000011', token6);
+  // J 有一条 2099 的墓碑(删除标记)
+  J.box.entries.set('j-tombstone', {
+    id: 'j-tombstone',
+    date: today,
+    content: '',
+    deviceId: J.id,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2099-01-01T00:00:00.000Z',
+    deletedAt: '2026-01-01T00:00:00.000Z',
+  });
+  const jw = await J.engine.watermark();
+  ok(jw < '2099-01-01T00:00:00.000Z', `2099 墓碑未顶高水位(实际水位=${jw || '(空)'})`);
+  const jv = await J.engine.watermarkVector();
+  ok(
+    !Object.values(jv).some((x) => x >= '2099-01-01T00:00:00.000Z'),
+    '2099 墓碑未污染水位向量',
+  );
+  // 之后 J 写正常条目 → K 应能收到(若水位被顶到 2099,精确区间就会失效)
+  const j2 = J.write('场景6:正常时间的新条目', today);
+  await J.engine.onLogin();
+  await K.engine.onLogin();
+  await J.engine.onLocalWrite();
+  await pump([J, K], 12, '场景6');
+  ok(K.has(j2.id), 'K 拿到了正常时间的新条目(水位未被 2099 顶死)');
+
   console.log(`\n同步合并新增(put 且原本不存在)共 ${putLog.length} 条:`);
   for (const l of putLog) console.log(`   ${l}`);
   console.log(`\n本次 write() 调用共 ${writeLog.length} 次:`);

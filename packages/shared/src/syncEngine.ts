@@ -123,6 +123,23 @@ export interface SyncEngineOptions {
   pageSize?: number;
 }
 
+/**
+ * 时间戳是否"合理"(用于水位/向量计算)。
+ *
+ * 背景:库里可能存在**异常未来时间**的条目 —— 例如早期同步测试中为了让"删除"在 LWW 里
+ * 必胜,把墓碑的 updatedAt 设成了 2099-01-01。这类值一旦参与水位计算,会把水位顶到 2099,
+ * 之后任何新条目("现在"的时间)都小于它,按来源比对时向量看似没变 → 精确区间协商失效,
+ * 退化成每次全量补传。
+ *
+ * 处理:水位/向量只统计"不超过当前时间 + 1 天"的时间戳;异常条目本身仍会正常同步
+ * (会被"条目数兜底"或首次全量带过去)。
+ */
+const FUTURE_SKEW_MS = 24 * 3600 * 1000;
+function plausibleTime(iso: string, now = Date.now()): boolean {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) && t <= now + FUTURE_SKEW_MS;
+}
+
 /** 从 markdown 里抽出媒体引用 id(与 apps/web 的 extractMediaIds 行为一致的最小实现)。 */
 function mediaIdsOf(content: string): string[] {
   const out: string[] = [];
@@ -153,8 +170,12 @@ export class SyncEngine {
   /** 本端水位线 = 本地全部条目 updatedAt 的最大值(删除也是更新,故含墓碑)。 */
   async watermark(): Promise<string> {
     const all = await this.o.store.all();
+    const now = Date.now();
     let wm = '';
-    for (const e of all) if (e.updatedAt && e.updatedAt > wm) wm = e.updatedAt;
+    for (const e of all) {
+      const u = String(e.updatedAt ?? '');
+      if (u && u > wm && plausibleTime(u, now)) wm = u;
+    }
     return wm;
   }
 
@@ -166,11 +187,12 @@ export class SyncEngine {
   /** 水位向量:按来源设备分别记录"我有的最新时间点"。(条目自带 origin deviceId) */
   async watermarkVector(): Promise<WatermarkVector> {
     const all = await this.o.store.all();
+    const now = Date.now();
     const v: WatermarkVector = {};
     for (const e of all) {
       const origin = e.deviceId || 'unknown';
       const u = String(e.updatedAt ?? '');
-      if (!u) continue;
+      if (!u || !plausibleTime(u, now)) continue;
       if (!v[origin] || u > v[origin]) v[origin] = u;
     }
     return v;
@@ -456,11 +478,14 @@ export class SyncEngine {
   /** 把本地 origin 来源、时间落在 (fromWm, toWm] 的条目分小批加密定向推给 requester。 */
   async serveRange(requester: string, origin: string, fromWm: string, toWm: string): Promise<number> {
     const all = await this.o.store.all();
+    const now = Date.now();
     const picked = all
       .filter((e) => {
         if (origin && (e.deviceId || 'unknown') !== origin) return false;
         const u = String(e.updatedAt ?? '');
         if (!u) return false;
+        // 异常未来时间的条目(如 2099 墓碑)不在任何正常区间内 → 只在"全量补传"(无上界)时带出
+        if (!plausibleTime(u, now) && toWm) return false;
         if (fromWm && u <= fromWm) return false;
         if (toWm && u > toWm) return false;
         return true;
