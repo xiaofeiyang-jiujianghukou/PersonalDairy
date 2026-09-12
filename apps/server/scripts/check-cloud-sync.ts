@@ -79,18 +79,25 @@ async function main(): Promise<void> {
       `leader=${String(hello.data?.leader).slice(0, 8)}…`,
     );
     for (const d of devices.filter((x) => x.deviceId !== dev)) {
-      console.log(`     设备 ${d.deviceId.slice(0, 8)}… 水位=${(d.watermark ?? '').slice(0, 19) || '(空)'} ${d.online ? '在线' : '离线'}`);
+      const wm = d.watermark ?? '';
+      // 中继/服务端一律存 UTC(结尾 Z);这里额外换算成本机时间,方便和手机/电脑上看到的时间对照
+      const local = wm ? new Date(wm).toLocaleString('zh-CN', { hour12: false }) : '(空)';
+      console.log(
+        `     设备 ${d.deviceId.slice(0, 8)}… 水位=${wm.slice(0, 19) || '(空)'} (本地 ${local}) 条目=${d.count ?? 0} ${d.online ? '在线' : '离线'}`,
+      );
     }
   }
 
+  // 注意:自检探针**没有数据**,必须上报空水位/0 条 —— 否则会污染设备注册表,
+  // 甚至因为"水位最新"被选举成主端,让其它端向一个空设备索取数据。
   const notify = await req<{ ok?: boolean }>('/api/relay/notify', {
-    body: { from: dev, watermark: new Date().toISOString(), vector: {}, payload: JSON.stringify({ plain: { watermark: new Date().toISOString() } }) },
+    body: { from: dev, watermark: '', vector: {}, count: 0, payload: JSON.stringify({ plain: { watermark: '', count: 0 } }) },
     token,
   });
   ok(notify.status === 200, '通知 /api/relay/notify', `HTTP ${notify.status}`);
 
   const need = await req<{ ok?: boolean }>('/api/relay/need', {
-    body: { from: dev, to: dev, origin: dev, fromWatermark: '', toWatermark: new Date().toISOString() },
+    body: { from: dev, to: dev, origin: dev, fromWatermark: '', toWatermark: '' },
     token,
   });
   ok(need.status === 200, '定向索取 /api/relay/need', `HTTP ${need.status}`);

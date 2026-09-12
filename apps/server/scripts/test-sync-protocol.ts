@@ -522,6 +522,22 @@ async function main(): Promise<void> {
   await pump([L, M], 12, '场景7-复活');
   ok(L.box.entries.get(tomb.id)?.content === '场景7:又被写回来了', '自愈后,新修改能正常同步(不再被 2099 永久压住)');
 
+  // ================= 场景 8:空设备(无数据)不得被选成主端 =================
+  console.log('\n[场景 8] 空设备(新装/自检探针,条目数 0)不得被选举为主端');
+  const token8 = await freshToken();
+  const N = new Device('devNNNNN-0000-0000-0000-000000000014', token8); // 有数据
+  const O = new Device('devOOOOO-0000-0000-0000-000000000015', token8); // 空设备
+  const n1 = N.write('场景8:有数据的那台', today, '2026-04-01T00:00:01.000Z');
+  await N.engine.onLogin();
+  await O.engine.onLogin(); // 空设备最后登录 → loginAt 更晚、且会用"当前时间"上报水位
+  const sorted = [...[n1].map((x) => x.updatedAt)];
+  ok(sorted.length === 1, '构造完成:一台有数据、一台为空');
+  const devs = (await http<{ leader: string | null }>('/api/relay/devices', { token: token8 })) as {
+    leader: string | null;
+  };
+  ok(devs.leader === N.id, `主端 = 有数据的 N(实际 ${String(devs.leader).slice(0, 10)})`);
+  ok(devs.leader !== O.id, '空设备 O 未被选为主端');
+
   console.log(`\n同步合并新增(put 且原本不存在)共 ${putLog.length} 条:`);
   for (const l of putLog) console.log(`   ${l}`);
   console.log(`\n本次 write() 调用共 ${writeLog.length} 次:`);
