@@ -132,11 +132,20 @@ export class RelaySocket {
     let ticket = '';
     try {
       const base = getApiBase();
-      const res = await fetch(`${base}/api/relay/ws-ticket`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ deviceId: getDeviceId() }),
-      });
+      // 同样必须有超时:否则票据请求挂住会让重连逻辑永远卡在 connecting
+      const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer = ctl ? setTimeout(() => ctl.abort(), 15000) : null;
+      let res: Response;
+      try {
+        res = await fetch(`${base}/api/relay/ws-ticket`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ deviceId: getDeviceId() }),
+          ...(ctl ? { signal: ctl.signal } : {}),
+        });
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
       if (!res.ok) throw new Error(`ticket ${res.status}`);
       const j = (await res.json()) as { ticket?: string };
       ticket = String(j.ticket ?? '');

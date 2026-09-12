@@ -2,6 +2,24 @@ import { getSyncEngine, getSyncKey, getSyncPartner, isPhoneMode, syncNow, relayP
 import { RelaySocket, type RelayStatus } from './relaySocket';
 
 let syncing = false;
+let syncingSince = 0;
+/** 同步标志最长持有时间:超过就认为上次同步卡死(请求挂住等),强制夺回。 */
+const SYNC_STUCK_MS = 90_000;
+
+/** 申请同步权。false = 已有同步在进行(且未卡死)。 */
+function beginSync(): boolean {
+  if (syncing) {
+    if (Date.now() - syncingSince < SYNC_STUCK_MS) return false;
+    syncing = false; // 上次明显卡死 → 夺回,否则这台设备永远不会再同步
+  }
+  syncing = true;
+  syncingSince = Date.now();
+  return true;
+}
+function endSync(): void {
+  syncing = false;
+  syncingSince = 0;
+}
 let socket: RelaySocket | null = null;
 let wsStatus: RelayStatus = 'idle';
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -55,8 +73,7 @@ export function scheduleSync(delay = 800): void {
   timer = setTimeout(() => {
     timer = null;
     void (async () => {
-      if (syncing) return;
-      syncing = true;
+      if (!beginSync()) return;
       try {
         const engine = getSyncEngine();
         await engine.onLocalWrite(); // 通知在线端
@@ -64,7 +81,7 @@ export function scheduleSync(delay = 800): void {
       } catch {
         /* 静默 */
       } finally {
-        syncing = false;
+        endSync();
       }
     })();
   }, delay);
@@ -94,14 +111,12 @@ export function startRelayLoop(): void {
   // 主通道:WebSocket 即时唤醒(连上后长轮询就停,不再产生空闲请求)
   socket = new RelaySocket({
     onWake: () => {
-      if (!isPhoneMode() || !getSyncKey() || syncing) return;
-      syncing = true;
+      if (!isPhoneMode() || !getSyncKey()) return;
+      if (!beginSync()) return;
       void getSyncEngine()
         .drain()
         .catch(() => {})
-        .finally(() => {
-          syncing = false;
-        });
+        .finally(() => endSync());
     },
     onOpen: () => reconcileNow(), // 首次连上 / 重连成功 → 立刻对账一次,补齐断线期间的变化
     onStatus: (st) => {
@@ -124,13 +139,11 @@ export function getSyncChannel(): 'ws' | 'poll' {
 
 /** 事件触发的一次完整对账(握手交换水位 → 按需补传 → 拉净)。 */
 export function reconcileNow(): void {
-  if (!isPhoneMode() || !getSyncKey() || syncing) return;
-  syncing = true;
+  if (!isPhoneMode() || !getSyncKey()) return;
+  if (!beginSync()) return;
   void doSync()
     .catch(() => {})
-    .finally(() => {
-      syncing = false;
-    });
+    .finally(() => endSync());
 }
 
 function onVisibility(): void {

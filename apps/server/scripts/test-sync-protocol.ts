@@ -628,6 +628,26 @@ async function main(): Promise<void> {
   await pump([U, V], 14, '场景12');
   ok(U.has(v1.id), '对端上线后,U 重新索取并拿到了缺失数据');
 
+  // ============ 场景 13:合并后设备表快照必须刷新 ============
+  console.log('\n[场景 13] 合并数据后,服务端设备表里的水位/条目数应随之刷新(不能是过期快照)');
+  const token13 = await freshToken();
+  const X = new Device('devXXXXX-0000-0000-0000-000000000023', token13);
+  const Y = new Device('devYYYYY-0000-0000-0000-000000000024', token13);
+  await X.engine.onLogin();
+  await Y.engine.onLogin();
+  const x1 = X.write('场景13:X 写的一条', today);
+  await X.engine.onLocalWrite();
+  await pump([X, Y], 12, '场景13');
+  ok(Y.has(x1.id), 'Y 已合并该条');
+  const devs13 = await http<{ devices: Array<{ deviceId: string; count: number; watermark: string }> }>(
+    '/api/relay/devices',
+    { token: token13 },
+  );
+  const yInfo = devs13.devices.find((d) => d.deviceId === Y.id);
+  const yWm = await Y.engine.watermark();
+  ok((yInfo?.count ?? 0) === Y.count(), `设备表里 Y 的条目数与本地一致(${yInfo?.count} vs ${Y.count()})`);
+  ok((yInfo?.watermark ?? '') === yWm, `设备表里 Y 的水位与本地一致(${String(yInfo?.watermark).slice(0, 19)})`);
+
   console.log(`\n同步合并新增(put 且原本不存在)共 ${putLog.length} 条:`);
   for (const l of putLog) console.log(`   ${l}`);
   console.log(`\n本次 write() 调用共 ${writeLog.length} 次:`);

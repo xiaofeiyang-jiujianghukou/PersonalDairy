@@ -179,16 +179,34 @@ function reqHeaders(init?: RequestInit): Record<string, string> {
   return { ...headers, ...((init?.headers as Record<string, string> | undefined) ?? {}) };
 }
 
-async function http<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await (await getFetch())(resolve(url), { ...init, headers: reqHeaders(init) });
+/**
+ * 带超时的 fetch。
+ *
+ * 为什么必须有:此前是裸 fetch —— 一旦请求"永远不返回"(服务端重启、切网瞬间、TCP 半开),
+ * await 就永久挂住 → 同步流程的 syncing 标志永远为 true → 之后所有唤醒/拉取都被自己挡掉,
+ * 而 WebSocket 心跳仍在发 → App 表现成"在线但什么都不干"。实测事故:手机就是这样卡死的。
+ */
+async function fetchWithTimeout(url: string, init?: RequestInit, timeoutMs = 25_000): Promise<Response> {
+  const f = await getFetch();
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
+  try {
+    return await f(url, { ...init, headers: reqHeaders(init), ...(ctl ? { signal: ctl.signal } : {}) });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function http<T>(url: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
+  const res = await fetchWithTimeout(resolve(url), init, timeoutMs);
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
     throw new Error(body?.message ?? body?.error ?? `请求失败 (${res.status})`);
   }
   return res.json() as Promise<T>;
 }
-async function httpFrom<T>(base: string, url: string, init?: RequestInit): Promise<T> {
-  const res = await (await getFetch())(`${base || ''}${url}`, { ...init, headers: reqHeaders(init) });
+async function httpFrom<T>(base: string, url: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
+  const res = await fetchWithTimeout(`${base || ''}${url}`, init, timeoutMs);
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
     throw new Error(body?.message ?? body?.error ?? `请求失败 (${res.status})`);
@@ -527,10 +545,12 @@ function makeEngineTransport(deviceId: string): SyncTransport {
         `/api/relay/pull?from=${encodeURIComponent(deviceId)}&after=${p.after}&limit=${p.limit}`,
       ),
     wait: (p) =>
-      http<{ hasNew: boolean }>('/api/relay/wait', {
-        method: 'POST',
-        body: JSON.stringify({ from: deviceId, after: p.after }),
-      }),
+      // 服务端会把请求挂起最长 20 秒,所以这里超时必须更宽,否则会被误判成失败
+      http<{ hasNew: boolean }>(
+        '/api/relay/wait',
+        { method: 'POST', body: JSON.stringify({ from: deviceId, after: p.after }) },
+        40_000,
+      ),
   };
 }
 

@@ -455,7 +455,12 @@ export class SyncEngine {
       this.o.state.setCursor(cursor);
       if (msgs.length < pageSize) break;
     }
-    if (merged > 0) this.o.onChange?.();
+    if (merged > 0) {
+      this.o.onChange?.();
+      // 合并后立刻把新的水位/向量/条目数上报(不阻塞主流程),否则服务端设备表里
+      // 一直是这台端"合并之前"的过期快照 —— 会让其它端误判谁领先、也会误导排查。
+      void this.heartbeat();
+    }
     return { merged };
   }
 
