@@ -247,6 +247,38 @@ export async function deviceRegister(
   return deviceList(uid);
 }
 
+/**
+ * 只刷新"最近出现时间"(在线状态),**不动水位/向量/条目数**。
+ *
+ * 用途:长轮询 /api/relay/wait 被客户端持续挂起 —— 该请求本身就是"我还活着"的信号,
+ * 收到即刷新 lastSeen。这样在线状态**不需要任何额外的心跳定时器**,零额外流量。
+ * (此前的坑:在线只在"登录/写入通知"时刷新 → 开着 App 但 90 秒没写东西就被判离线。)
+ */
+export async function deviceSeen(uid: number, deviceId: string): Promise<void> {
+  if (!deviceId) return;
+  const r = c();
+  const raw = await r.hget(regKey(uid), deviceId);
+  const now = Date.now();
+  if (!raw) {
+    // 没注册过(旧版本客户端也会挂长轮询):建一条空记录,只用于在线显示
+    await r.hset(
+      regKey(uid),
+      deviceId,
+      JSON.stringify({ deviceId, watermark: '', vector: {}, count: 0, loginAt: now, lastSeen: now }),
+    );
+    await r.expire(regKey(uid), REG_TTL);
+    return;
+  }
+  try {
+    const prev = JSON.parse(raw) as DeviceInfo;
+    prev.lastSeen = now;
+    await r.hset(regKey(uid), deviceId, JSON.stringify(prev));
+    await r.expire(regKey(uid), REG_TTL);
+  } catch {
+    /* 坏数据忽略 */
+  }
+}
+
 /** 只更新水位线/心跳,不动 loginAt。 */
 export async function deviceTouch(
   uid: number,

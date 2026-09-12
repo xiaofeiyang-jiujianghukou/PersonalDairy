@@ -559,6 +559,27 @@ async function main(): Promise<void> {
   ok(devs9.leader === P.id, `主端 = 有数据的真机 P(实际 ${String(devs9.leader).slice(0, 10)})`);
   ok(devs9.leader !== Q.id, '在线的空探针 Q 未当主端');
 
+  // ================= 场景 10:长轮询请求本身即刷新"在线" =================
+  console.log('\n[场景 10] 客户端挂着长轮询 → 服务端应视为在线(无需额外心跳定时器)');
+  const token10 = await freshToken();
+  const R = new Device('devRRRRR-0000-0000-0000-000000000018', token10);
+  await R.engine.onLogin();
+  const listBefore = await http<{ devices: Array<{ deviceId: string; lastSeen: number; online?: boolean }> }>(
+    '/api/relay/devices',
+    { token: token10 },
+  );
+  const before = listBefore.devices.find((d) => d.deviceId === R.id)?.lastSeen ?? 0;
+  await sleep(1200);
+  // 只挂一次长轮询(就是 App 在线时的常驻行为),不发任何心跳、不写数据
+  await R.engine.waitAndPull(800);
+  const listAfter = await http<{ devices: Array<{ deviceId: string; lastSeen: number; online?: boolean }> }>(
+    '/api/relay/devices',
+    { token: token10 },
+  );
+  const rAfter = listAfter.devices.find((d) => d.deviceId === R.id);
+  ok((rAfter?.lastSeen ?? 0) > before, `长轮询刷新了 lastSeen(${before} → ${rAfter?.lastSeen})`);
+  ok(rAfter?.online === true, '该端被判定为在线');
+
   console.log(`\n同步合并新增(put 且原本不存在)共 ${putLog.length} 条:`);
   for (const l of putLog) console.log(`   ${l}`);
   console.log(`\n本次 write() 调用共 ${writeLog.length} 次:`);

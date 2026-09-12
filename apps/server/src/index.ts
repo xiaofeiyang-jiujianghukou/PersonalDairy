@@ -57,6 +57,7 @@ import {
   deviceRegister,
   deviceTouch,
   deviceList,
+  deviceSeen,
   pickLeader,
   type DeviceInfo,
   type RelayKind,
@@ -421,6 +422,7 @@ app.post('/api/relay/push', async (req, reply) => {
 app.get('/api/relay/pull', async (req) => {
   const user = (req as AuthedRequest).user!;
   const from = String((req.query as { from?: string }).from ?? '');
+  if (from) void deviceSeen(user.id, from); // 拉取即"我还在"(不阻塞主流程)
   const after = Number((req.query as { after?: string }).after ?? 0) || 0;
   const limit = Math.max(1, Math.min(Number((req.query as { limit?: string }).limit) || 100, 200));
   const r = await relayPull(user.id, from, after, limit);
@@ -432,6 +434,9 @@ app.post('/api/relay/wait', async (req) => {
   const user = (req as AuthedRequest).user!;
   const { from, after } = (req.body ?? {}) as { from?: string; after?: number };
   const f = typeof from === 'string' ? from : '';
+  // 长轮询请求本身就是在线上报:客户端每 ≤20 秒就会重新挂一次 → 在线状态始终准确,
+  // 且**不需要额外的定时心跳**。必须在挂起之前刷新(挂起期间不算"刚出现")。
+  if (f) await deviceSeen(user.id, f);
   const a = Number(after) || 0;
   if (await relayHasNew(user.id, a, f)) return { hasNew: true };
   return relayWaitOnce(user.id, f, a);
