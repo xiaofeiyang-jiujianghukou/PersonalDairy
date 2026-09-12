@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { authApi, clearToken, exportUrl, relaySyncNow, setLastSyncAt, setRelayCursor } from '../api';
+import { getSyncEngine } from '../api';
 import { getSyncChannel } from '../lib/syncAuto';
 import SettingsModal from '../components/SettingsModal';
 import CompanionModal from '../components/CompanionModal';
@@ -13,11 +14,30 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
   const [showCompanion, setShowCompanion] = useState(false);
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
-  // 唤醒通道:WS 为主,长轮询兜底。显示出来便于确认当前走哪条(本地状态,无网络请求)
+  // 本机同步自查状态(全部读本地,不发网络请求):通道 / 本机条目数 / 水位 / 上次同步
   const [channel, setChannel] = useState<'ws' | 'poll'>(getSyncChannel());
+  const [localCount, setLocalCount] = useState<number | null>(null);
+  const [localWatermark, setLocalWatermark] = useState('');
   useEffect(() => {
-    const t = setInterval(() => setChannel(getSyncChannel()), 2000);
-    return () => clearInterval(t);
+    let alive = true;
+    const refresh = async (): Promise<void> => {
+      setChannel(getSyncChannel());
+      try {
+        const eng = getSyncEngine();
+        const [n, wm] = await Promise.all([eng.count(), eng.watermark()]);
+        if (!alive) return;
+        setLocalCount(n);
+        setLocalWatermark(wm);
+      } catch {
+        /* 未登录/未配对时忽略 */
+      }
+    };
+    void refresh();
+    const t = setInterval(() => void refresh(), 3000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
   }, []);
 
   useEffect(() => {
@@ -104,6 +124,12 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
 
       <p className="mine-version">
         版本 v{__APP_VERSION__} · 唤醒通道 {channel === 'ws' ? 'WebSocket' : '长轮询(兜底)'}
+        {localCount !== null && (
+          <>
+            <br />
+            本机 {localCount} 条 · 最后更新 {localWatermark ? new Date(localWatermark).toLocaleString('zh-CN', { hour12: false }) : '(空)'}
+          </>
+        )}
       </p>
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
