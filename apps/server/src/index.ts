@@ -65,7 +65,7 @@ import {
 } from './relayRedis.js';
 import { getTextProvider, getVisionProvider } from './ai/index.js';
 import { summarizeMonth } from './ai/summary.js';
-import { chatWithDiary, type CompanionMessage } from './ai/companion.js';
+import { chatWithDiary, type CompanionMessage, type CompanionMode } from './ai/companion.js';
 import { sendCodeEmail } from './mail.js';
 import {
   entriesContainImages,
@@ -968,10 +968,10 @@ app.post('/api/companion', async (req, reply) => {
     | null;
   const key = getSyncKey();
   const encrypted = Boolean(raw && (raw as { enc?: unknown }).enc);
-  let body: { messages?: CompanionMessage[]; context?: Entry[] };
+  let body: { messages?: CompanionMessage[]; context?: Entry[]; mode?: CompanionMode };
   if (encrypted) {
     try {
-      body = await decryptObject<{ messages?: CompanionMessage[]; context?: Entry[] }>(
+      body = await decryptObject<{ messages?: CompanionMessage[]; context?: Entry[]; mode?: CompanionMode }>(
         key,
         (raw as { enc: { iv: string; data: string } }).enc,
       );
@@ -979,7 +979,7 @@ app.post('/api/companion', async (req, reply) => {
       return reply.code(401).send({ error: '同步密钥不匹配' });
     }
   } else {
-    body = raw as { messages?: CompanionMessage[]; context?: Entry[] };
+    body = raw as { messages?: CompanionMessage[]; context?: Entry[]; mode?: CompanionMode };
   }
   const messages = body?.messages;
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -991,7 +991,8 @@ app.post('/api/companion', async (req, reply) => {
   }
   const context = Array.isArray(body?.context) ? (body.context as Entry[]) : [];
   const provider = getTextProvider();
-  const text = await chatWithDiary(context, messages as CompanionMessage[], provider);
+  const mode: CompanionMode = body?.mode === 'mentor' ? 'mentor' : 'companion';
+  const text = await chatWithDiary(context, messages as CompanionMessage[], provider, mode);
   const result = { reply: text, model: config.ai.textModel };
   return encrypted ? { enc: await encryptObject(key, result) } : result;
 });

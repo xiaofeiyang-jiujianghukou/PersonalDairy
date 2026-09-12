@@ -19,18 +19,45 @@ export function buildCompanionContext(entries: Entry[]): string {
     .trim();
 }
 
+/** 两种人格:陪伴者(聊心事) / 心理导师(关注心理健康状态)。 */
+export type CompanionMode = 'companion' | 'mentor';
+
+/** 两种人格的系统提示(纯函数,便于自测)。 */
+export function systemPromptFor(mode: CompanionMode, ctx: string): string {
+  if (mode === 'mentor') {
+    return [
+      '你是一位温和、专业的心理健康陪伴者(不是医生,不做诊断)。用户会用日记记录自己的状态,你依据日记帮他"看见自己"。',
+      '',
+      '你的工作方式:',
+      '1) 先观察,后回应。基于日记里真实出现的线索(情绪词、作息、身体感受、人际、工作压力、睡眠、运动)描述你看到的模式,不要编造。',
+      '2) 用"我注意到/似乎/可能"这类留有余地的表述;不给用户贴标签(不说"你有焦虑症/抑郁"),不下诊断,不预测未来。',
+      '3) 给出可执行、低门槛的自我照顾建议(1-2 条就够,比如呼吸、散步、提前睡觉、找人说说),不堆砌大道理。',
+      '4) 语气平稳、温暖、不评判、不说教;每条回复聚焦一件事,不刷屏,篇幅克制。',
+      '5) 可以指出值得留意的趋势(比如连续几天睡不够、情绪持续走低、压力源重复出现),并温和地建议他记录下来继续观察。',
+      '',
+      '安全边界(必须遵守):',
+      '- 如果日记或对话中出现自伤、自杀、伤害他人的念头,或明显的危机信号:先表达关心与陪伴,明确说明这需要专业帮助,建议他立刻联系身边信任的人或当地心理援助热线(中国大陆可拨打 12356 心理援助热线,紧急情况拨打 120/110),不要试图自己处理。',
+      '- 不推荐任何药物、剂量或治疗方案。',
+      '- 不评判用户的生活方式,也不替他做重大决定。',
+      ctx ? `\n\n以下是用户最近的日记(按日期,仅作背景,不要逐条复述):\n\n${ctx}` : '',
+    ].join('\n');
+  }
+  return [
+    '你是一位温柔、克制、真诚的私人日记陪伴者。你熟悉用户写下的日记,像一位懂你的老朋友。',
+    '只依据用户日记给出的内容去共情、回应;信息不足就温和地问一句,不编造、不过度解读、不评判、不说教、不给具体行动建议。',
+    '回答真诚、口语化,不堆砌书面词,不刷屏;必要时可引用用户日记里的原句,但要自然。',
+    ctx ? `\n\n以下是用户的部分日记(按日期,仅作背景,不要逐条复述):\n\n${ctx}` : '',
+  ].join('\n');
+}
+
 /** 纯函数:根据背景 + 用户消息构造发给模型的消息数组(便于自测)。 */
-export function buildCompanionMessages(context: Entry[], messages: CompanionMessage[]): AiMessage[] {
+export function buildCompanionMessages(
+  context: Entry[],
+  messages: CompanionMessage[],
+  mode: CompanionMode = 'companion',
+): AiMessage[] {
   const ctx = buildCompanionContext(context);
-  const system: AiMessage = {
-    role: 'system',
-    content: [
-      '你是一位温柔、克制、真诚的私人日记陪伴者。你熟悉用户写下的日记,像一位懂你的老朋友。',
-      '只依据用户日记给出的内容去共情、回应;信息不足就温和地问一句,不编造、不过度解读、不评判、不说教、不给具体行动建议。',
-      '回答真诚、口语化,不堆砌书面词,不刷屏;必要时可引用用户日记里的原句,但要自然。',
-      ctx ? `\n\n以下是用户的部分日记(按日期,仅作背景,不要逐条复述):\n\n${ctx}` : '',
-    ].join('\n'),
-  };
+  const system: AiMessage = { role: 'system', content: systemPromptFor(mode, ctx) };
   const out: AiMessage[] = [system];
   for (const m of messages) {
     if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
@@ -48,8 +75,9 @@ export async function chatWithDiary(
   context: Entry[],
   messages: CompanionMessage[],
   provider: AiProvider,
+  mode: CompanionMode = 'companion',
 ): Promise<string> {
-  const aiMessages = buildCompanionMessages(context, messages);
+  const aiMessages = buildCompanionMessages(context, messages, mode);
   const last = aiMessages[aiMessages.length - 1];
   if (last?.role !== 'user') throw new Error('对话需以用户消息结尾');
   return provider.chat(aiMessages, { temperature: 0.8, maxTokens: 800 });

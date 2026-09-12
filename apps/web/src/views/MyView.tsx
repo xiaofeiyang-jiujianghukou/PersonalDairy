@@ -3,7 +3,7 @@ import { authApi, clearToken, exportUrl, relaySyncNow, setLastSyncAt, setRelayCu
 import { getSyncEngine } from '../api';
 import { getSyncChannel } from '../lib/syncAuto';
 import SettingsModal from '../components/SettingsModal';
-import CompanionModal from '../components/CompanionModal';
+import CompanionModal, { type CompanionMode } from '../components/CompanionModal';
 import ResolvedImage from '../components/ResolvedImage';
 
 export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => void }) {
@@ -11,7 +11,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
   const [nickname, setNickname] = useState('');
   const [avatar, setAvatar] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [showCompanion, setShowCompanion] = useState(false);
+  const [chatMode, setChatMode] = useState<CompanionMode | null>(null);
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   // 本机同步自查状态(全部读本地,不发网络请求):通道 / 本机条目数 / 水位 / 上次同步
@@ -86,7 +86,12 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
     { label: '重置密码', desc: '当前密码 + 新密码', onClick: () => setShowSettings(true) },
     { label: '绑定微信', desc: '微信扫码登录(即将开放)', onClick: () => comingSoon('绑定微信') },
     { label: '绑定手机号', desc: '手机号登录(即将开放)', onClick: () => comingSoon('绑定手机号') },
-    { label: 'AI 陪伴', desc: '读过你的日记,陪你聊', onClick: () => setShowCompanion(true) },
+    { label: 'AI 陪伴', desc: '读过你的日记,陪你聊', onClick: () => setChatMode('companion') },
+    {
+      label: 'AI 心理导师',
+      desc: '陪你留意情绪、睡眠与压力状态(不做诊断)',
+      onClick: () => setChatMode('mentor'),
+    },
     { label: '数据备份 / 迁移', desc: '导出/导入迁移包', onClick: () => setShowSettings(true) },
     { label: '导出日记', desc: 'Markdown / JSON', onClick: () => window.open(exportUrl()) },
     {
@@ -148,7 +153,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
       </p>
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
-      {showCompanion && <CompanionModal onClose={() => setShowCompanion(false)} />}
+      {chatMode && <CompanionModal mode={chatMode} onClose={() => setChatMode(null)} />}
     </div>
   );
 }

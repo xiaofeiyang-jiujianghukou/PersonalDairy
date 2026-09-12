@@ -327,17 +327,21 @@ async function companionLocal(messages: CompanionMessage[], context: Entry[]): P
 }
 
 export const companionApi = {
-  chat: (messages: CompanionMessage[], context: Entry[]): Promise<{ reply: string; model: string }> => {
+  chat: (
+    messages: CompanionMessage[],
+    context: Entry[],
+    mode: 'companion' | 'mentor' = 'companion',
+  ): Promise<{ reply: string; model: string }> => {
     // 已配置云端(base)时,本地优先也直接走云端(内容只在 AI 处理时短暂经过,不落盘)
     if (getApiBase()) {
       return http<{ reply: string; model: string }>('/api/companion', {
         method: 'POST',
-        body: JSON.stringify({ messages, context }),
+        body: JSON.stringify({ messages, context, mode }),
       });
     }
     return isPhoneLocal() ? companionLocal(messages, context) : http<{ reply: string; model: string }>('/api/companion', {
       method: 'POST',
-      body: JSON.stringify({ messages, context }),
+      body: JSON.stringify({ messages, context, mode }),
     });
   },
 };
