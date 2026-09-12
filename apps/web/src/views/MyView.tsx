@@ -91,7 +91,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
     { label: 'AI 陪伴', desc: '读过你的日记,陪你聊', onClick: () => setChatMode('companion') },
     {
       label: 'AI 心理导师',
-      desc: '一次性看看最近的状态(情绪/睡眠/压力,不做诊断)',
+      desc: '近况面板 + 免费心理疏导对话(不做诊断)',
       onClick: () => setShowMentor(true),
     },
     { label: '数据备份 / 迁移', desc: '导出/导入迁移包', onClick: () => setShowSettings(true) },
