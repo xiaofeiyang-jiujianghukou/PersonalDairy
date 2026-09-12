@@ -61,7 +61,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const dev = `check-${Math.random().toString(36).slice(2, 10)}`;
+  // 固定探针名:避免每次自检都往设备注册表里塞一台新设备(注册表 90 天过期)
+  const dev = 'probe-check-tool';
   const hello = await req<{ leader?: string | null; devices?: Array<{ deviceId: string; watermark?: string; online?: boolean }> }>(
     '/api/relay/hello',
     { body: { from: dev, watermark: '', vector: {} }, token },
