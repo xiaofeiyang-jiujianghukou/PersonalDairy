@@ -291,30 +291,27 @@ export async function deviceTouch(
 }
 
 /**
- * 主端选举:优先在"确实持有数据"的在线端里选。
+ * 主端选举 —— 严格按需求方的规则:
+ *   「谁更新时间最新谁就是老大;时间相同,谁最先登录谁是老大」
  *
- * 候选优先级(逐级回退,避免选出一个空设备当主端——那样其它端向它索取会一无所获):
- *   ① 在线 且 有数据(count>0) ② 有数据(离线也算:主端首先是"数据的权威来源",
- *      在线的空设备毫无价值) ③ 在线 ④ 全部
- * 规则:水位线最新者优先;水位相同取 loginAt 最早者(登录更早=数据更完整);仍相同按 deviceId 稳定排序。
+ * 实现细节:
+ *   · 候选 = 有水位(即真的持有数据)的端。没有水位的空端(新装/自检探针)不参选 ——
+ *     它们没有任何数据可提供,当主端毫无意义。
+ *   · 在场优先:候选里先看在线的;在线候选为空时,退化为全部候选
+ *     (手机被系统冻结时"在线"并不可靠,但它持有的数据依然算数)。
+ *   · 排序:水位最新 → 登录最早 → deviceId(保证结果稳定)。
  */
 export function pickLeader(devices: DeviceInfo[]): string | null {
-  if (!devices.length) return null;
+  const candidates = devices.filter((d) => Boolean(d.watermark));
+  if (!candidates.length) return null;
   const now = Date.now();
-  const online = devices.filter((d) => now - d.lastSeen <= DEVICE_ONLINE_MS);
-  const withData = devices.filter((d) => (d.count ?? 0) > 0 && d.watermark);
-  const onlineWithData = online.filter((d) => (d.count ?? 0) > 0 && d.watermark);
-  const pool = onlineWithData.length
-    ? onlineWithData
-    : withData.length
-      ? withData // 有数据 > 在线:关掉的真机仍比一个在线的空探针更该当主端
-      : online.length
-        ? online
-        : devices;
+  const online = candidates.filter((d) => now - d.lastSeen <= DEVICE_ONLINE_MS);
+  const pool = online.length ? online : candidates;
   const sorted = [...pool].sort((a, b) => {
-    if (a.watermark !== b.watermark) return a.watermark < b.watermark ? 1 : -1; // 水位新 → 前
-    if (a.loginAt !== b.loginAt) return a.loginAt - b.loginAt; // 登录早 → 前
-    return a.deviceId < b.deviceId ? -1 : 1;
+    if (a.watermark !== b.watermark) return a.watermark < b.watermark ? 1 : -1; // ① 更新时间的
+    if (a.loginAt !== b.loginAt) return a.loginAt - b.loginAt; // ② 相同时间 → 先登录的
+    return a.deviceId < b.deviceId ? -1 : 1; // ③ 稳定兜底
   });
   return sorted[0]?.deviceId ?? null;
 }
+

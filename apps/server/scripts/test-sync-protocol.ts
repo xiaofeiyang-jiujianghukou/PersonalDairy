@@ -648,6 +648,25 @@ async function main(): Promise<void> {
   ok((yInfo?.count ?? 0) === Y.count(), `设备表里 Y 的条目数与本地一致(${yInfo?.count} vs ${Y.count()})`);
   ok((yInfo?.watermark ?? '') === yWm, `设备表里 Y 的水位与本地一致(${String(yInfo?.watermark).slice(0, 19)})`);
 
+  // ============ 场景 14:主端规则 —— 谁最新谁是老大;相同则先登录者为老大 ============
+  console.log('\n[场景 14] 主端规则:① 更新时间最新者优先 ② 时间相同则先登录者优先');
+  const token14 = await freshToken();
+  const T1 = new Device('devT1-0000-0000-0000-0000000000001', token14);
+  const T2 = new Device('devT2-0000-0000-0000-0000000000002', token14);
+  T1.write('场景14:T1 的数据', today, '2026-07-01T00:00:00.000Z');
+  T2.write('场景14:T2 的数据', today, '2026-07-01T00:00:00.000Z'); // 与 T1 相同水位
+  await T1.engine.onLogin();
+  await sleep(80);
+  await T2.engine.onLogin(); // T1 先登录
+  const lead1 = (await http<{ leader: string | null }>('/api/relay/devices', { token: token14 })).leader;
+  ok(lead1 === T1.id, `水位相同时 → 先登录的 T1 为老大(实际 ${String(lead1).slice(0, 6)})`);
+  // T2 写一条更新的 → 水位最新者应当接任
+  await sleep(80);
+  T2.write('场景14:T2 更新的数据', today, '2026-07-02T00:00:00.000Z');
+  await T2.engine.onLogin();
+  const lead2 = (await http<{ leader: string | null }>('/api/relay/devices', { token: token14 })).leader;
+  ok(lead2 === T2.id, `谁更新时间最新谁就是老大 → T2 接任(实际 ${String(lead2).slice(0, 6)})`);
+
   console.log(`\n同步合并新增(put 且原本不存在)共 ${putLog.length} 条:`);
   for (const l of putLog) console.log(`   ${l}`);
   console.log(`\n本次 write() 调用共 ${writeLog.length} 次:`);
