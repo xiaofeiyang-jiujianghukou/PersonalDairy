@@ -89,7 +89,58 @@ trans:{uid}:devices       终端集合（用于"全部消费后删除"）
 trans:{uid}:reg           终端注册表：deviceId → {watermark, vector, count, loginAt, lastSeen}
 ```
 
-## 5. 客户端在线策略（纯事件驱动，无定时轮询）
+## 5. 唤醒通道:WebSocket 为主,长轮询兜底
+
+**定位**:唤醒通道只负责"有东西了,快去拉",**不承载数据**(数据仍走 `need/serve/pull`)。
+所以它坏掉**不会导致数据不一致**,但会退化成"只能等用户操作时才同步" —— 因此做了双通道。
+
+### 5.1 WebSocket(主通道)
+```
+客户端 → POST /api/relay/ws-ticket   (Bearer 鉴权, 带 deviceId)
+        ← { ticket, expiresIn: 60 }
+客户端 → GET  /api/relay/ws?ticket=… (WebSocket 升级)
+        ← {"type":"ready"}     连接建立
+        ← {"type":"wake"}      有消息了 → 客户端立即 drain()
+```
+- **为什么用票据**:浏览器/WebView 的 `WebSocket` **不能带自定义请求头**(无法发 `Authorization`),
+  直接 `?token=` 会让长期 token 进 nginx 日志 → 改为"Bearer 换一次性票据"(60 秒过期、**用后即焚**、绑定账号+设备)。
+- **在线状态**:连接建立即视为在线,之后每个 pong(30 秒)刷新 —— 比"靠上报"更准。
+- **存活检测**:服务端每 30 秒 `ping`,一个周期内没有 `pong` 即判定半开连接并 `terminate()`
+  (手机切网/NAT 超时后 TCP 可能"看起来还在")。
+- **定向**:`to` 指向某设备时只唤醒该设备的 socket;发送方自己的 socket 不会被唤醒。
+- **同设备重复连接**:新连接替换旧连接(旧连接以 4409 关闭)。
+
+### 5.2 长轮询(兜底)
+`POST /api/relay/wait`(服务端挂起 ≤20 秒,有新消息立即返回)。
+**只在 WebSocket 未连通时才真正发请求** —— 客户端轮询循环每轮先判断 `socket.connected`,
+连上就跳过。所以 WS 健康时它零流量,WS 挂了它自动接管。
+存在的理由:nginx 未配 `Upgrade`、公司/运营商代理拦 WS、服务端重启等情况下,
+WS 可能**永远连不上**,没有兜底就会退化成"手机写了、开着的电脑不动"。
+
+### 5.3 断线与重连
+| 触发 | 动作 |
+|---|---|
+| `onclose` / `onerror` | 指数退避重连(1→2→5→10→20→30 秒封顶);连接曾稳定存活 >10 秒则重置退避 |
+| 重连成功 | **立即做一次完整对账**(hello + 按需补传),补齐断线期间错过的变化 |
+| App 回到前台 | 立即重连(`reconnectNow`,不等退避)+ 一次完整对账 |
+| 网络恢复(`online`) | 同上 |
+
+### 5.4 nginx 必须加的三行
+```nginx
+location /api/relay/ws {
+    proxy_pass http://127.0.0.1:4520;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;      # ← 缺这三行 WS 会握手失败
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_read_timeout 3600s;                    # 长连接不能被 60s 默认超时掐断
+    proxy_send_timeout 3600s;
+}
+```
+> 若不加这段,`/api/relay/ws` 会走普通 HTTP location → 握手失败 → 客户端自动回落到长轮询(功能不受影响,只是没享受到即时唤醒)。
+
+## 6. 客户端在线策略（纯事件驱动，无定时轮询）
 
 | 触发（事件） | 动作 |
 |---|---|
@@ -103,7 +154,7 @@ trans:{uid}:reg           终端注册表：deviceId → {watermark, vector, cou
 **没有 `setInterval` 定时轮询**：唯一的常驻连接是长轮询（没有新消息时服务端不返回）。
 "回前台 / 网络恢复"这两个**真实事件**用来兜住"长轮询连接被系统静默掐断"的情况。
 
-## 6. 自测（可复现）
+## 7. 自测（可复现）
 
 ```bash
 # 起测试用 Redis（独立端口，不动生产）
@@ -114,10 +165,25 @@ pnpm --filter @diary/server test:sync
 ```
 
 覆盖：场景 1（在线实时）、场景 2（新端补传）、场景 3（多端同时上线 + 主端选举）、
-场景 4（条目数兜底）、场景 5（旧客户端兼容）。
+场景 4（条目数兜底）、场景 5（旧客户端兼容）、场景 6/7（异常未来时间自愈）、
+场景 8/9（空设备不得当主端）、场景 10（长轮询请求即在线上报）。
 
 自测里**刻意不做任何定时对账**（只收消息 + 响应事件），因此 17 项断言全绿即证明
 收敛不依赖周期性轮询。可重复运行。
 
-> 部署后另有一条云端自检：
+WS 通道自测（15 项：票据鉴权/一次性/伪造被拒、唤醒投递、定向不误投、不叫醒自己、兜底有效）：
+```bash
+pnpm --filter @diary/server test:ws
+```
+
+> 部署后另有云端自检：
 > `DIARY_USER=账号 DIARY_PASS=密码 pnpm --filter @diary/server check:cloud`
+
+## 8. 部署（服务端）
+```bash
+cd /deploy/PersonalDairy
+git pull
+pnpm install            # ← 本次新增了依赖 @fastify/websocket,这一步不能省
+pm2 restart diary-server
+```
+另外把 §5.4 的 nginx 片段加到站点配置里,然后 `nginx -t && systemctl reload nginx`。

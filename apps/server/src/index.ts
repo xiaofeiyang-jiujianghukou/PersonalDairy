@@ -5,6 +5,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import QRCode from 'qrcode';
 import {
@@ -100,6 +101,8 @@ app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body,
 
 // 允许本机 / 局域网前端访问(本地优先应用,不做鉴权,数据只在你自己的机器上)。
 await app.register(cors, { origin: true });
+// WebSocket 通道(即时唤醒)。业务数据仍走 HTTP 的 need/serve/pull,WS 只推"有新消息"。
+await app.register(websocket);
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -365,6 +368,7 @@ interface RelayWaiter {
 const relayWaiters = new Map<number, Set<RelayWaiter>>();
 
 function wakeRelayWaiters(userId: number, fromDevice: string, toDevice = ''): void {
+  wakeSockets(userId, fromDevice, toDevice); // WebSocket 主通道(即时)
   const set = relayWaiters.get(userId);
   if (!set) return;
   for (const w of Array.from(set)) {
@@ -374,6 +378,127 @@ function wakeRelayWaiters(userId: number, fromDevice: string, toDevice = ''): vo
     w.finish(true);
   }
 }
+
+// ---------- WebSocket 即时唤醒通道 ----------
+// 设计要点:
+//   · 浏览器/WebView 的 WebSocket 不能带 Authorization 头 → 先用 Bearer 换"一次性短时票据",
+//     再以 ?ticket= 建立连接(票据 60 秒过期、用后即焚、绑定账号与设备),避免 token 出现在 URL/日志里。
+//   · 在线状态:连接建立即视为在线,之后每个 pong 都会刷新(30 秒一次),比靠上报更准。
+//   · 存活检测:服务端每 30 秒 ping,一个周期内没收到 pong 就判定半开连接并断开
+//     (手机切网/NAT 超时后 TCP 可能"看起来还在")。
+interface WsTicket {
+  uid: number;
+  deviceId: string;
+  expires: number;
+}
+const WS_TICKET_TTL_MS = 60 * 1000;
+const wsTickets = new Map<string, WsTicket>();
+/** 只用到的最小连接接口(避免为类型再引入 @types/ws) */
+interface WsLike {
+  send(data: string): void;
+  ping(): void;
+  close(code?: number, reason?: string): void;
+  terminate(): void;
+  on(event: string, cb: (...args: unknown[]) => void): void;
+}
+/** 账号 → 设备 → 连接 */
+const wsClients = new Map<number, Map<string, WsLike>>();
+const WS_PING_MS = 30 * 1000;
+
+function wakeSockets(uid: number, fromDevice: string, toDevice: string): void {
+  const m = wsClients.get(uid);
+  if (!m || !m.size) return;
+  for (const [deviceId, sock] of m) {
+    if (deviceId === fromDevice) continue; // 自己推的不叫醒自己
+    if (toDevice && toDevice !== deviceId) continue; // 定向消息只叫醒目标端
+    try {
+      sock.send(JSON.stringify({ type: 'wake', from: fromDevice }));
+    } catch {
+      /* 单个连接异常不影响其它连接 */
+    }
+  }
+}
+
+app.post('/api/relay/ws-ticket', { preHandler: requireAuth }, async (req) => {
+  const user = (req as AuthedRequest).user!;
+  const { deviceId } = (req.body ?? {}) as { deviceId?: string };
+  const now = Date.now();
+  for (const [k, v] of wsTickets) if (v.expires < now) wsTickets.delete(k); // 顺手清过期
+  const ticket = randomUUID();
+  wsTickets.set(ticket, { uid: user.id, deviceId: String(deviceId ?? ''), expires: now + WS_TICKET_TTL_MS });
+  return { ticket, expiresIn: Math.floor(WS_TICKET_TTL_MS / 1000) };
+});
+
+app.get('/api/relay/ws', { websocket: true }, (socket, req) => {
+  const ticket = String((req.query as { ticket?: string }).ticket ?? '');
+  const t = wsTickets.get(ticket);
+  wsTickets.delete(ticket); // 一次性:无论成功与否都作废
+  if (!t || t.expires < Date.now()) {
+    try {
+      socket.close(4401, 'ticket invalid');
+    } catch {
+      /* 忽略 */
+    }
+    return;
+  }
+  const uid = t.uid;
+  const deviceId = t.deviceId || `ws-${randomUUID().slice(0, 8)}`;
+
+  let m = wsClients.get(uid);
+  if (!m) {
+    m = new Map();
+    wsClients.set(uid, m);
+  }
+  const old = m.get(deviceId);
+  if (old && old !== socket) {
+    try {
+      old.close(4409, 'replaced by a newer connection');
+    } catch {
+      /* 忽略 */
+    }
+  }
+  m.set(deviceId, socket as unknown as WsLike);
+  void deviceSeen(uid, deviceId); // 连接即在线
+  try {
+    socket.send(JSON.stringify({ type: 'ready', deviceId }));
+  } catch {
+    /* 忽略 */
+  }
+
+  let alive = true;
+  const ping = setInterval(() => {
+    if (!alive) {
+      clearInterval(ping);
+      try {
+        socket.terminate();
+      } catch {
+        /* 忽略 */
+      }
+      return;
+    }
+    alive = false;
+    try {
+      socket.ping();
+    } catch {
+      /* 忽略 */
+    }
+  }, WS_PING_MS);
+
+  socket.on('pong', () => {
+    alive = true;
+    void deviceSeen(uid, deviceId); // 心跳兼在线刷新
+  });
+  const cleanup = (): void => {
+    clearInterval(ping);
+    const mm = wsClients.get(uid);
+    if (mm && mm.get(deviceId) === (socket as unknown as WsLike)) {
+      mm.delete(deviceId);
+      if (!mm.size) wsClients.delete(uid);
+    }
+  };
+  socket.on('close', cleanup);
+  socket.on('error', cleanup);
+});
 
 function relayWaitOnce(userId: number, from: string, after: number): Promise<{ hasNew: boolean }> {
   return new Promise((resolve) => {
@@ -569,7 +694,9 @@ app.post('/api/relay/need', async (req, reply) => {
 });
 
 // 会话保护:除 健康/鉴权/扫码 外,所有 /api 需 Bearer 登录
-const OPEN_PREFIXES = ['/api/health', '/api/auth', '/api/qr'];
+// /api/relay/ws 走"一次性票据"自鉴权(浏览器 WebSocket API 不能带自定义请求头),
+// 因此经 onRequest 放行,由 websocket 处理器内部校验票据。
+const OPEN_PREFIXES = ['/api/health', '/api/auth', '/api/qr', '/api/relay/ws'];
 // 云端模式:禁止这些"内容存储/读取"端点(遵循"服务端不存日记内容")
 const CLOUD_BLOCKED_PREFIXES = [
   '/api/entries',

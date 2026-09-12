@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { authApi, clearToken, exportUrl, relaySyncNow, setLastSyncAt, setRelayCursor } from '../api';
+import { getSyncChannel } from '../lib/syncAuto';
 import SettingsModal from '../components/SettingsModal';
 import CompanionModal from '../components/CompanionModal';
 import ResolvedImage from '../components/ResolvedImage';
@@ -12,6 +13,12 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
   const [showCompanion, setShowCompanion] = useState(false);
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
+  // 唤醒通道:WS 为主,长轮询兜底。显示出来便于确认当前走哪条(本地状态,无网络请求)
+  const [channel, setChannel] = useState<'ws' | 'poll'>(getSyncChannel());
+  useEffect(() => {
+    const t = setInterval(() => setChannel(getSyncChannel()), 2000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     authApi
@@ -95,7 +102,9 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
 
       {notice && <p className="ok" style={{ textAlign: 'center' }}>{notice}</p>}
 
-      <p className="mine-version">版本 v{__APP_VERSION__}</p>
+      <p className="mine-version">
+        版本 v{__APP_VERSION__} · 唤醒通道 {channel === 'ws' ? 'WebSocket' : '长轮询(兜底)'}
+      </p>
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
       {showCompanion && <CompanionModal onClose={() => setShowCompanion(false)} />}

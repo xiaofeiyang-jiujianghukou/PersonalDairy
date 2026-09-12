@@ -1,6 +1,9 @@
 import { getSyncEngine, getSyncKey, getSyncPartner, isPhoneMode, syncNow, relayPullOnly } from '../api';
+import { RelaySocket, type RelayStatus } from './relaySocket';
 
 let syncing = false;
+let socket: RelaySocket | null = null;
+let wsStatus: RelayStatus = 'idle';
 let timer: ReturnType<typeof setTimeout> | null = null;
 let loopAborted = false;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -87,13 +90,36 @@ export function scheduleSync(delay = 800): void {
 export function startRelayLoop(): void {
   stopRelayLoop();
   loopAborted = false;
+
+  // 主通道:WebSocket 即时唤醒(连上后长轮询就停,不再产生空闲请求)
+  socket = new RelaySocket({
+    onWake: () => {
+      if (!isPhoneMode() || !getSyncKey() || syncing) return;
+      syncing = true;
+      void getSyncEngine()
+        .drain()
+        .catch(() => {})
+        .finally(() => {
+          syncing = false;
+        });
+    },
+    onOpen: () => reconcileNow(), // 首次连上 / 重连成功 → 立刻对账一次,补齐断线期间的变化
+    onStatus: (st) => {
+      wsStatus = st;
+    },
+  });
+  socket.start();
+
+  // 兜底:长轮询循环常驻,但**只在 WS 未连通时才真正发请求**(见 relayWaitLoop)
   void relayWaitLoop();
-  if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', onVisibility);
-  }
-  if (typeof window !== 'undefined') {
-    window.addEventListener('online', onOnline);
-  }
+
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility);
+  if (typeof window !== 'undefined') window.addEventListener('online', onOnline);
+}
+
+/** 当前唤醒通道:'ws' 为主,'poll' 表示正在用长轮询兜底。 */
+export function getSyncChannel(): 'ws' | 'poll' {
+  return wsStatus === 'open' ? 'ws' : 'poll';
 }
 
 /** 事件触发的一次完整对账(握手交换水位 → 按需补传 → 拉净)。 */
@@ -108,11 +134,14 @@ export function reconcileNow(): void {
 }
 
 function onVisibility(): void {
-  if (document.visibilityState === 'visible') reconcileNow(); // 回到前台
+  if (document.visibilityState !== 'visible') return;
+  socket?.reconnectNow(); // 被系统冻结过 → 立刻重连,不等退避
+  reconcileNow(); // 并做一次完整对账,补齐冻结期间错过的变化
 }
 
 function onOnline(): void {
-  reconcileNow(); // 网络恢复
+  socket?.reconnectNow(); // 切网后原连接必死 → 立刻重连
+  reconcileNow();
 }
 
 /** 长轮询主线:等被唤醒 → 拉数并处理控制消息;超时 → 立刻重新挂上;出错 → 退避重连。 */
@@ -122,19 +151,27 @@ async function relayWaitLoop(): Promise<void> {
       await sleep(2000);
       continue;
     }
+    // WebSocket 健康 → 唤醒由它承担,这里不发任何请求(避免空闲流量)
+    if (socket?.connected) {
+      await sleep(1000);
+      continue;
+    }
     try {
       const handled = await getSyncEngine().waitAndPull();
       if (loopAborted) return;
       if (!handled) continue;
     } catch {
       if (loopAborted) return;
-      await sleep(3000); // 连接出错 → 退避重连(重连后靠上面的对账补齐)
+      await sleep(3000); // 出错退避(WS 恢复后会自动接管)
     }
   }
 }
 
 export function stopRelayLoop(): void {
   loopAborted = true;
+  socket?.stop();
+  socket = null;
+  wsStatus = 'idle';
   if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility);
   if (typeof window !== 'undefined') window.removeEventListener('online', onOnline);
 }
