@@ -41,7 +41,11 @@ function ok(cond: boolean, name: string): void {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // ---------------- 模拟设备 ----------------
-interface Stored { entries: Map<string, DiaryEntry>; images: Map<string, string> }
+interface Stored {
+  entries: Map<string, DiaryEntry>;
+  images: Map<string, string>;
+  chat: Map<string, { id: string; thread: string; role: 'user' | 'assistant'; content: string; createdAt: string }>;
+}
 
 function makeStore(box: Stored): SyncStore {
   return {
@@ -59,6 +63,10 @@ function makeStore(box: Stored): SyncStore {
       for (const it of items) box.images.set(it.id, it.dataUrl);
     },
     localMediaIds: async () => [...box.images.keys()],
+    chatAll: async () => [...box.chat.values()],
+    chatPut: async (msgs) => {
+      for (const m of msgs) if (!box.chat.has(m.id)) box.chat.set(m.id, m);
+    },
   };
 }
 
@@ -128,7 +136,7 @@ function makeTransport(deviceId: string, token: string): SyncTransport {
 
 class Device {
   readonly id: string;
-  readonly box: Stored = { entries: new Map(), images: new Map() };
+  readonly box: Stored = { entries: new Map(), images: new Map(), chat: new Map() };
   readonly engine: SyncEngine;
   pushedAt = '';
   private seq = 0;
@@ -164,6 +172,26 @@ class Device {
     this.box.entries.set(id, e);
     if (imageId) this.box.images.set(imageId, `data:image/png;base64,${'A'.repeat(64)}`);
     return e;
+  }
+
+  /** 模拟在 AI 对话里说一句(交给同步引擎带出去)。 */
+  say(thread: string, content: string): string {
+    const id = `chat-${this.id.slice(0, 4)}-${Math.random().toString(36).slice(2, 8)}`;
+    const at = new Date().toISOString();
+    this.box.chat.set(id, { id, thread, role: 'user', content, createdAt: at });
+    return id;
+  }
+
+  /** 模拟 AI 回复一条。 */
+  reply(thread: string, content: string): string {
+    const id = `chat-${this.id.slice(0, 4)}-${Math.random().toString(36).slice(2, 8)}`;
+    const at = new Date().toISOString();
+    this.box.chat.set(id, { id, thread, role: 'assistant', content, createdAt: at });
+    return id;
+  }
+
+  chatIds(): string[] {
+    return [...this.box.chat.keys()].sort();
   }
 
   ids(): string[] {
@@ -636,6 +664,29 @@ async function main(): Promise<void> {
   await B15.engine.drain(); // 只取一次
   const missed = made.filter((id) => !B15.has(id));
   ok(missed.length === 0, `B 一次取件拿到全部 25 条(缺 ${missed.length} 条)`);
+
+  // ============ 场景 16:AI 对话也走同一条加密链路同步 ============
+  console.log('\n[场景 16] AI 对话(陪伴/心理导师)多端同步,且重复收到不产生重复');
+  const token16 = await freshToken();
+  const C1 = new Device('devC16-0000-0000-0000-0000000000031', token16);
+  const C2 = new Device('devC16-0000-0000-0000-0000000000032', token16);
+  await C1.engine.onLogin();
+  await C2.engine.onLogin();
+  const q = C1.say('mentor', '我最近睡不好,心里也堵');
+  const a = C1.reply('mentor', '我注意到你这几天都提到睡得少,我们一件件来看。');
+  await C1.engine.onLocalWrite(); // 通知 + 随行带上最近对话
+  await pump([C1, C2], 12, '场景16');
+  ok(C2.box.chat.has(q) && C2.box.chat.has(a), 'B 端收到了 A 端的对话(用户+AI 两条)');
+  // 再同步一轮(对话被重复携带)→ 不应产生重复
+  const chatBefore = C2.chatIds().length;
+  await C1.engine.onLocalWrite();
+  await pump([C1, C2], 8, '场景16-重复');
+  ok(C2.chatIds().length === chatBefore, `重复携带不会产生重复消息(${chatBefore} → ${C2.chatIds().length})`);
+  // 反向:对端聊的也要回来
+  const q2 = C2.say('companion', '换我问一句');
+  await C2.engine.onLocalWrite();
+  await pump([C1, C2], 12, '场景16-反向');
+  ok(C1.box.chat.has(q2), '反向同步同样成立(对端聊的会回到本端)');
 
   console.log(`\n同步合并新增(put 且原本不存在)共 ${putLog.length} 条:`);
   for (const l of putLog) console.log(`   ${l}`);

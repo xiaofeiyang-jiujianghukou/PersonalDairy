@@ -31,6 +31,19 @@ export interface DiaryEntry {
   deletedAt?: string | null;
 }
 
+/**
+ * AI 对话消息(陪伴 / 心理导师)。与日记一样**只存在终端**,经由同一套加密信箱链路同步。
+ * 消息一旦生成就不再修改 → 合并时按 id 去重即可,不存在冲突。
+ */
+export interface ChatMessage {
+  id: string;
+  /** 对话所属线程:'companion' | 'mentor' | … */
+  thread: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+}
+
 export interface PeerDevice {
   deviceId: string;
   /** 全局最新时间点(用于展示与主端选举)。 */
@@ -99,6 +112,10 @@ export interface SyncStore {
   exportMedia(ids: string[]): Promise<Array<{ id: string; dataUrl: string }>>;
   importMedia(items: Array<{ id: string; dataUrl: string }>): Promise<void>;
   localMediaIds(): Promise<string[]>;
+  /** 本机全部 AI 对话消息(可选:宿主不实现则不同步对话)。 */
+  chatAll?(): Promise<ChatMessage[]>;
+  /** 写入对端带来的对话消息(按 id 去重)。 */
+  chatPut?(messages: ChatMessage[]): Promise<void>;
 }
 
 export interface SyncCipher {
@@ -125,6 +142,8 @@ export interface SyncEngineOptions {
   log?: (msg: string) => void;
   /** 单条推送的目标字节上限(超过则分批)。 */
   chunkBytes?: number;
+  /** 每次推送附带多少条最近的 AI 对话(靠 id 去重,自带自愈能力)。 */
+  chatCarry?: number;
   /** 每页拉取条数。 */
   pageSize?: number;
   /**
@@ -191,6 +210,8 @@ export class SyncEngine {
   private leader: string | null = null;
   private busy = false;
   /** 诊断:最近一次同步/错误情况(界面上可直接显示,便于实机排查)。 */
+  /** 最近一次随行带出去的对话 id —— 对话变化时即使没有日记增量也要推送。 */
+  private lastChatPushed = '';
   private diag = {
     lastSyncAt: '',
     lastError: '',
@@ -203,6 +224,34 @@ export class SyncEngine {
 
   constructor(opts: SyncEngineOptions) {
     this.o = opts as never;
+  }
+
+  /** 随每次推送携带的最近对话(固定条数,靠 id 去重)。 */
+  private async carryChat(): Promise<ChatMessage[]> {
+    if (!this.o.store.chatAll) return [];
+    try {
+      const all = await this.o.store.chatAll();
+      const n = this.o.chatCarry ?? 60;
+      return all
+        .slice()
+        .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
+        .slice(-n);
+    } catch {
+      return [];
+    }
+  }
+
+  /** 合并对端带来的对话(按 id 去重,幂等)。返回新写入条数。 */
+  async mergeChat(remote: ChatMessage[] | undefined): Promise<number> {
+    if (!remote?.length || !this.o.store.chatAll || !this.o.store.chatPut) return 0;
+    const local = await this.o.store.chatAll();
+    const seen = new Set(local.map((m) => m.id));
+    const fresh = remote.filter(
+      (m) => m && m.id && (m.role === 'user' || m.role === 'assistant') && m.content && !seen.has(m.id),
+    );
+    if (!fresh.length) return 0;
+    await this.o.store.chatPut(fresh);
+    return fresh.length;
   }
 
   private log(msg: string): void {
@@ -283,12 +332,39 @@ export class SyncEngine {
     this.log(`✖ ${this.diag.lastError}`);
   }
 
+  /**
+   * 只改了对话(没写日记)时,也要把对话推给在线端。
+   * 否则"聊完一句就关掉"的内容永远出不去 —— 实测 bug。
+   */
+  private async carryChatIfNeeded(): Promise<number> {
+    if (!this.o.store.chatAll) return 0;
+    const chat = await this.carryChat();
+    const newest = chat[chat.length - 1]?.id ?? '';
+    if (!newest || newest === this.lastChatPushed) return 0;
+    try {
+      const enc = await this.o.cipher.encrypt({
+        entries: [],
+        images: [],
+        localImageIds: await this.o.store.localMediaIds(),
+        chat,
+      });
+      await this.o.transport.push({ deviceId: this.o.deviceId, to: '', payload: JSON.stringify(enc) });
+      this.lastChatPushed = newest;
+      this.log(`随行带出对话 ${chat.length} 条`);
+      return chat.length;
+    } catch (e) {
+      this.fail('推送对话', e);
+      return 0;
+    }
+  }
+
   // ---------------- 写入端:广播"我更新了" ----------------
   async onLocalWrite(): Promise<void> {
     // (a) 兼容广播:把"上次广播之后的新数据"推到中继。
     //     新协议靠对端来索取区间,但旧版本客户端只会拉广播数据,不广播它们就收不到更新;
     //     顺带也让中继自己保留一份近期增量,新设备即使没有在线对端也能恢复。
     await this.broadcastDelta();
+    await this.carryChatIfNeeded(); // 只改了对话(没写日记)时也要带出去
     // (b) 通知在线端(新协议:对端按需索取区间)
     const wm = await this.watermark();
     if (!wm || wm === this.lastNotified) return;
@@ -337,8 +413,10 @@ export class SyncEngine {
       const ids = new Set<string>();
       for (const e of batch) for (const id of mediaIdsOf(e.content)) ids.add(id);
       const images = ids.size ? await this.o.store.exportMedia([...ids]) : [];
-      const enc = await this.o.cipher.encrypt({ entries: batch, images, localImageIds });
+      const chat = await this.carryChat();
+      const enc = await this.o.cipher.encrypt({ entries: batch, images, localImageIds, chat });
       await this.o.transport.push({ deviceId: this.o.deviceId, to: '', payload: JSON.stringify(enc) });
+      this.lastChatPushed = chat[chat.length - 1]?.id ?? this.lastChatPushed;
       sent += batch.length;
       batch = [];
       size = 0;
@@ -551,8 +629,11 @@ export class SyncEngine {
     const peer = await this.decryptData<{
       entries?: DiaryEntry[];
       images?: Array<{ id: string; dataUrl: string }>;
+      chat?: ChatMessage[];
     }>(m.payload);
     if (!peer) return 0; // 解不开(旧密钥/别人的)→ 跳过,不阻塞
+    const chatMerged = await this.mergeChat(peer.chat);
+    if (chatMerged > 0) this.o.onChange?.(); // 对话有新内容 → 通知界面刷新
     for (const img of peer.images ?? []) {
       if (img?.dataUrl) await this.o.store.importMedia([img]);
     }
@@ -613,7 +694,8 @@ export class SyncEngine {
       const ids = new Set<string>();
       for (const e of batch) for (const id of mediaIdsOf(e.content)) ids.add(id);
       const images = ids.size ? await this.o.store.exportMedia([...ids]) : [];
-      const enc = await this.o.cipher.encrypt({ entries: batch, images, localImageIds });
+      const chat = await this.carryChat();
+      const enc = await this.o.cipher.encrypt({ entries: batch, images, localImageIds, chat });
       await this.o.transport.push({ deviceId: this.o.deviceId, to: requester, payload: JSON.stringify(enc) });
       sent += batch.length;
       batch = [];

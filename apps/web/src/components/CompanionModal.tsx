@@ -3,14 +3,18 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import type { Entry } from '@diary/shared';
-import { getAllLocalEntries, companionApi, type CompanionMessage } from '../api';
+import { getAllLocalEntries, companionApi } from '../api';
+import { appendMessage, clearThread, loadThread } from '../lib/chatStore';
+import { onDataChanged } from '../lib/dataEvents';
+import { scheduleSync } from '../lib/syncAuto';
+import type { ChatMessage } from '@diary/shared/syncEngine';
 import { allowImageUrlTransform } from '../lib/image';
 import ResolvedImage from './ResolvedImage';
 
 /** 两种人格:陪伴者(聊心事) / 心理导师(关注心理健康状态)。 */
 export type CompanionMode = 'companion' | 'mentor';
 
-const GREETINGS: Record<CompanionMode, CompanionMessage> = {
+const GREETINGS: Record<CompanionMode, { role: 'assistant'; content: string }> = {
   companion: {
     role: 'assistant',
     content: '我在。你已经写下了不少日子。想聊聊哪一段?或者今天过得怎么样,也可以跟我说说。',
@@ -36,27 +40,10 @@ const META: Record<CompanionMode, { title: string; hint: string; chatKey: string
   },
 };
 
-const HISTORY_CAP = 200;
-
-/** 读回上次的对话(关了再打开还能接着聊)。 */
-function loadHistory(mode: CompanionMode): CompanionMessage[] {
-  try {
-    const raw = localStorage.getItem(META[mode].chatKey);
-    if (!raw) return [GREETINGS[mode]];
-    const arr = JSON.parse(raw) as CompanionMessage[];
-    if (!Array.isArray(arr) || !arr.length) return [GREETINGS[mode]];
-    return arr.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content);
-  } catch {
-    return [GREETINGS[mode]];
-  }
-}
-
-function saveHistory(mode: CompanionMode, messages: CompanionMessage[]): void {
-  try {
-    localStorage.setItem(META[mode].chatKey, JSON.stringify(messages.slice(-HISTORY_CAP)));
-  } catch {
-    /* 存不下就忽略(不影响本次对话) */
-  }
+/** 首条问候(异步/同步初始态用它,之后都在本地库里)。 */
+function greetingFor(mode: CompanionMode): ChatMessage {
+  const g = GREETINGS[mode];
+  return { id: `greet-${mode}`, thread: mode, role: 'assistant', content: g.content, createdAt: '1970-01-01T00:00:00.000Z' };
 }
 
 async function gatherContext(): Promise<Entry[]> {
@@ -75,7 +62,10 @@ export default function CompanionModal({
   onClose: () => void;
   mode?: CompanionMode;
 }) {
-  const [messages, setMessages] = useState<CompanionMessage[]>(() => loadHistory(mode));
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    const saved = loadThread(mode);
+    return saved.length ? saved : [greetingFor(mode)];
+  });
   const [input, setInput] = useState('');
   const [context, setContext] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -90,22 +80,32 @@ export default function CompanionModal({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages, loading]);
 
-  // 对话落盘(本地):关掉再打开还能看到上次聊的内容
+  // 同步(别的设备聊过 / 本机被对端补齐)→ 自动刷新当前对话
   useEffect(() => {
-    saveHistory(mode, messages);
-  }, [mode, messages]);
+    return onDataChanged(() => {
+      const saved = loadThread(mode);
+      if (saved.length) setMessages(saved);
+    });
+  }, [mode]);
 
   async function send() {
     const text = input.trim();
     if (!text || loading) return;
-    const next: CompanionMessage[] = [...messages, { role: 'user', content: text }];
+    const mine = appendMessage(mode, 'user', text); // 落盘(带 id/时间戳)→ 会被同步到其它端
+    scheduleSync(300); // 立刻把这次对话推给在线端(不必等日记变化)
+    const next = [...messages, mine];
     setMessages(next);
     setInput('');
     setLoading(true);
     setError(null);
     try {
-      const r = await companionApi.chat(next, context, mode);
-      setMessages((m) => [...m, { role: 'assistant', content: r.reply }]);
+      const r = await companionApi.chat(
+        next.map((m) => ({ role: m.role, content: m.content })),
+        context,
+        mode,
+      );
+      setMessages([...next, appendMessage(mode, 'assistant', r.reply)]);
+      scheduleSync(300); // AI 的回复同样带出去
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -160,7 +160,10 @@ export default function CompanionModal({
           <button
             className="ghost"
             onClick={() => {
-              if (window.confirm('清空这段对话?日记本身不受影响。')) setMessages([GREETINGS[mode]]);
+              if (window.confirm('清空这段对话?日记本身不受影响。')) {
+                clearThread(mode);
+                setMessages([greetingFor(mode)]);
+              }
             }}
           >
             清空对话

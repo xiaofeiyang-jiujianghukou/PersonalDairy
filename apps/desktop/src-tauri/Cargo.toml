@@ -1,6 +1,6 @@
 [package]
 name = "personal-diary-desktop"
-version = "0.12.0"
+version = "0.13.0"
 description = "我的日记 · Linux 桌面应用登录壳"
 authors = ["you"]
 edition = "2021"

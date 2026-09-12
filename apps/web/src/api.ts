@@ -11,6 +11,7 @@ import { extractMediaIds } from '@diary/shared/images';
 import { decryptObject, deriveSyncKey, encryptObject } from '@diary/shared/syncCrypto';
 import { emitDataChanged } from './lib/dataEvents';
 import { getDeviceId } from './lib/device';
+import { chatAll, chatPut } from './lib/chatStore';
 import { SyncEngine, type SyncStore, type SyncTransport, type DiaryEntry as EngineEntry } from '@diary/shared/syncEngine';
 import { IdbBackend, createLocalApi, listImageIds, type LocalBackend } from './lib/localStore';
 import { exportMediaFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
@@ -570,6 +571,9 @@ function makeEngineStore(): SyncStore {
       for (const it of items) if (it?.dataUrl) await importImageDataUrl(it.dataUrl);
     },
     localMediaIds: () => listImageIds(),
+    // AI 对话与日记同源同步:交给 chatStore 读写(按 id 去重)
+    chatAll: async () => chatAll(),
+    chatPut: async (messages) => chatPut(messages as never),
   };
 }
 
