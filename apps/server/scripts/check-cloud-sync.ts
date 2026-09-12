@@ -105,6 +105,51 @@ async function main(): Promise<void> {
   const devices = await req<{ devices?: unknown[] }>('/api/relay/devices', { token });
   ok(devices.status === 200, '设备表 /api/relay/devices', `HTTP ${devices.status}`);
 
+  // ---------- WebSocket 唤醒通道(最容易漏配 nginx Upgrade) ----------
+  const t = await req<{ ticket?: string }>('/api/relay/ws-ticket', { body: { deviceId: dev }, token });
+  ok(t.status === 200 && Boolean(t.data?.ticket), '换取 WS 一次性票据', `HTTP ${t.status}`);
+  if (t.data?.ticket) {
+    const wsUrl = `${BASE.replace(/^http/i, 'ws')}/api/relay/ws?ticket=${encodeURIComponent(t.data.ticket)}`;
+    const result = await new Promise<{ ok: boolean; note: string }>((resolve) => {
+      let done = false;
+      const finish = (ok: boolean, note: string): void => {
+        if (done) return;
+        done = true;
+        try {
+          ws.close();
+        } catch {
+          /* 忽略 */
+        }
+        resolve({ ok, note });
+      };
+      const ws = new WebSocket(wsUrl);
+      const timer = setTimeout(() => finish(false, '10 秒内未收到 ready(可能被 nginx/代理拦截)'), 10000);
+      ws.onmessage = (ev) => {
+        try {
+          const m = JSON.parse(String((ev as MessageEvent).data)) as { type?: string };
+          if (m.type === 'ready') {
+            clearTimeout(timer);
+            finish(true, '已连接并收到 ready');
+          }
+        } catch {
+          /* 忽略 */
+        }
+      };
+      ws.onerror = () => {
+        clearTimeout(timer);
+        finish(false, '握手失败(检查 nginx 的 Upgrade / proxy_read_timeout 配置)');
+      };
+      ws.onclose = () => {
+        clearTimeout(timer);
+        finish(false, '连接被关闭');
+      };
+    });
+    ok(result.ok, 'WebSocket 唤醒通道可用', result.note);
+    if (!result.ok) {
+      console.log('     → 未配 nginx 也能用(客户端会自动回落到长轮询),但建议按 docs/sync-protocol.md §5.4 配置');
+    }
+  }
+
   console.log(`\n结果: 通过 ${pass} 项,失败 ${fail} 项\n`);
   process.exit(fail === 0 ? 0 : 1);
 }
