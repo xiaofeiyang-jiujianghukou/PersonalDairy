@@ -78,17 +78,19 @@ D/E/F 各自 hello ──► 服务端选举主端：
 | `POST /api/relay/push` | 推数据（`kind:'data'`，`to` 定向或空=广播），载荷为密文 |
 | `GET  /api/relay/mbox` | **取走自己的信箱**（取走即消费，无游标）—— 新协议的收件方式 |
 | `POST /api/relay/wait` | 长轮询兜底：只问"我的信箱里有没有东西"（不带任何位置信息） |
-| `GET  /api/relay/pull` | 遗留：给未升级的旧客户端按游标拉共享日志（新客户端不使用） |
+| `POST /api/relay/push` | 投递：把加密数据放进收件设备的信箱（离线端不投，取走即删） |
 
-Redis 结构（每账号一套）：
+Redis 结构（**每账号只有这两项**）：
 
 ```
-trans:{uid}:mbox:{dev}    每设备信箱(LIST)：给这台设备的东西投进来，**取走即消费**
-trans:{uid}:reg           终端注册表：deviceId → {watermark, vector, count, loginAt, lastSeen}
-trans:{uid}:events        遗留共享日志(Stream)，只服务未升级的旧客户端
-trans:{uid}:offset:{dev}  遗留游标，同上
-trans:{uid}:devices       终端集合(遗留清理用)
+trans:{uid}:reg           多端状态：deviceId → {watermark, vector, count, loginAt, lastSeen}
+trans:{uid}:mbox:{dev}    该端尚未取走的信件(LIST)：**取走即删**,TTL 只作兜底
 ```
+
+**服务端不承担存储**：
+- 只投给**此刻在线**的端；离线的端不投（它回来时按水位向量索取即可），因此几乎不积压；
+- 中转的载荷是端到端密文，服务端不解密、不读内容；
+- 旧的"共享消息日志 + 每端游标"已整体删除（实测 Redis 里 `events`/`offset` 均为 0 个 key）。
 
 ### 为什么没有游标（重要）
 需求方的模型是**纯时间区间驱动**：看到对端水位更高 → 只索取那段时间的数据。

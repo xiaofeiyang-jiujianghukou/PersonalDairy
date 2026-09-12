@@ -417,36 +417,6 @@ async function main(): Promise<void> {
   ok(G.has(ph1.id), 'G 拿到了缺失的旧条目本体(水位看不出缺口,靠条目数兜底)');
   ok(G.count() === H.count(), `G/H 条目数一致(${G.count()} vs ${H.count()})`);
 
-  // ================= 场景 5:旧版本客户端仍能收到更新(兼容广播) =================
-  console.log('\n[场景 5] 旧版本客户端(只拉广播数据、不会索取区间)→ 仍能收到新条目');
-  const token5 = await freshToken();
-  const I = new Device('devIIIII-0000-0000-0000-000000000009', token5);
-  await I.engine.onLogin();
-  // 模拟旧客户端:只拉广播 data 消息并合并,从不发 hello/need
-  const legacyEntries = new Map<string, DiaryEntry>();
-  let legacyCursor = 0;
-  async function legacyPull(): Promise<void> {
-    const page = await http<{
-      messages: Array<{ id: number; from: string; kind: string; to: string; payload: string }>;
-      lastId: number;
-    }>(`/api/relay/pull?from=legacyDevice&after=${legacyCursor}&limit=50`, { token: token5 });
-    for (const m of page.messages) {
-      if (m.kind !== 'data') continue;
-      try {
-        const dec = (await decryptObject(SYNC_KEY, JSON.parse(m.payload))) as { entries?: DiaryEntry[] };
-        for (const e of dec.entries ?? []) legacyEntries.set(e.id, e);
-      } catch {
-        /* 旧客户端解不开就跳过 */
-      }
-    }
-    legacyCursor = Math.max(legacyCursor, page.lastId);
-  }
-  const i1 = I.write('场景5:新协议时代写的条目', today);
-  await I.engine.onLocalWrite(); // 同时会做一次"兼容广播"
-  await pump([I], 6, '场景5');
-  await legacyPull();
-  ok(legacyEntries.has(i1.id), '旧客户端通过兼容广播收到了新条目(不会被新协议饿死)');
-
   // ================= 场景 6:异常未来时间(2099 墓碑)不得顶高水位 =================
   console.log('\n[场景 6] 库里存在 2099 年墓碑(早期 LWW 测试遗留)→ 不得顶高水位、不得让区间协商失效');
   const token6 = await freshToken();
@@ -586,28 +556,12 @@ async function main(): Promise<void> {
   await S.engine.onLogin();
   await S.engine.onLocalWrite();
   await pump([S], 6, '场景11');
-  // 用"只读广播数据、从不索取"的观察者来证明:**数据确实被广播进了中继**
-  // (若水位被 2099 卡死,这里将什么都读不到)
-  const seen = new Map<string, DiaryEntry>();
-  let obsCursor = 0;
-  for (let i = 0; i < 4; i++) {
-    const page = await http<{
-      messages: Array<{ id: number; kind: string; payload: string }>;
-      lastId: number;
-    }>(`/api/relay/pull?from=observer-only&after=${obsCursor}&limit=50`, { token: token11 });
-    for (const m of page.messages) {
-      if (m.kind !== 'data') continue;
-      try {
-        const dec = (await decryptObject(SYNC_KEY, JSON.parse(m.payload))) as { entries?: DiaryEntry[] };
-        for (const e of dec.entries ?? []) seen.set(e.id, e);
-      } catch {
-        /* 忽略 */
-      }
-    }
-    obsCursor = Math.max(obsCursor, page.lastId);
-    await sleep(120);
-  }
-  ok(seen.has(s1.id), '广播水位被污染时,本端增量仍被广播进中继(观察者读到该条)');
+  // 验证:即便本端"广播水位"被污染,增量仍然被投递出去(另一台在线设备能收到)
+  const T11 = new Device('devT11-0000-0000-0000-0000000000027', token11);
+  await T11.engine.onLogin();
+  await pump([S], 4, '场景11-写侧');
+  await T11.engine.drain();
+  ok(T11.has(s1.id), '广播水位被污染时,增量仍被投递到其它在线设备的信箱');
 
   // ============ 场景 12:无人应答的 need 必须在下一个事件重试 ============
   console.log('\n[场景 12] 第一次 need 无人应答 → 对端上线后重新索取(不能只发一次就放弃)');
