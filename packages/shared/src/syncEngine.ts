@@ -121,6 +121,12 @@ export interface SyncEngineOptions {
   chunkBytes?: number;
   /** 每页拉取条数。 */
   pageSize?: number;
+  /**
+   * 同一个区间请求的去重窗口(毫秒,默认 60 秒)。
+   * 超出窗口后,下一个事件(登录/收到通知/有端加入)会**重新索取** —— 因为
+   * need 可能因为"对端当时不在线/请求丢失"而始终没被满足,不能只发一次就永远放弃。
+   */
+  requestRetryMs?: number;
 }
 
 /**
@@ -174,8 +180,8 @@ export class SyncEngine {
     SyncEngineOptions;
   /** 已广播过的水位(避免重复 notify 刷屏)。 */
   private lastNotified = '';
-  /** 已请求过的 (target, theirWatermark),避免重复 need。 */
-  private readonly requested = new Set<string>();
+  /** 已请求过的区间 → 上次请求时间(超过窗口允许重试,见 requestRetryMs)。 */
+  private readonly requested = new Map<string, number>();
   private leader: string | null = null;
   private busy = false;
 
@@ -266,9 +272,19 @@ export class SyncEngine {
     }
   }
 
+  /**
+   * 读取"广播水位"。
+   * 异常值(如被污染的 2099)一律当作"没有水位" —— 否则 `updatedAt > 2099` 永远不成立,
+   * 这台设备就**再也推不出任何数据**(实测事故:电脑端 lastSyncAt=2099 → 永不广播)。
+   */
+  private pushedAt(): string {
+    const v = this.o.state.getPushedAt?.() ?? '';
+    return plausibleTime(v) ? v : '';
+  }
+
   /** 把 pushedAt 之后的新条目分小批广播到中继(不带 to = 同账号所有端可见)。 */
   async broadcastDelta(): Promise<number> {
-    const since = this.o.state.getPushedAt?.() ?? '';
+    const since = this.pushedAt();
     const all = await this.o.store.all();
     const now = Date.now();
     const delta = all
@@ -375,8 +391,10 @@ export class SyncEngine {
 
   private async requestRange(to: string, origin: string, fromWm: string, toWm: string): Promise<void> {
     const key = `${to}|${origin}|${toWm}`;
-    if (this.requested.has(key)) return;
-    this.requested.add(key);
+    const window = this.o.requestRetryMs ?? 60_000;
+    const last = this.requested.get(key);
+    if (last !== undefined && Date.now() - last < window) return; // 窗口内不重复
+    this.requested.set(key, Date.now());
     try {
       await this.o.transport.need({
         deviceId: this.o.deviceId,
@@ -624,7 +642,7 @@ export class SyncEngine {
   /** 兜底:本地若有未广播过的更新,补一次"广播增量 + notify"。 */
   private async serveNote(): Promise<number> {
     const wm = await this.watermark();
-    const pushedAt = this.o.state.getPushedAt?.() ?? '';
+    const pushedAt = this.pushedAt();
     if (wm && (wm !== this.lastNotified || wm > pushedAt)) {
       await this.onLocalWrite();
       return 1;

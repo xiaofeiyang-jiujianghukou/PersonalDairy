@@ -133,10 +133,11 @@ class Device {
   pushedAt = '';
   private seq = 0;
 
-  constructor(id: string, token: string) {
+  constructor(id: string, token: string, extra: Partial<{ requestRetryMs: number }> = {}) {
     this.id = id;
     this.engine = new SyncEngine({
       deviceId: id,
+      ...(extra.requestRetryMs !== undefined ? { requestRetryMs: extra.requestRetryMs } : {}),
       transport: makeTransport(id, token),
       store: makeStore(this.box),
       cipher: {
@@ -579,6 +580,53 @@ async function main(): Promise<void> {
   const rAfter = listAfter.devices.find((d) => d.deviceId === R.id);
   ok((rAfter?.lastSeen ?? 0) > before, `长轮询刷新了 lastSeen(${before} → ${rAfter?.lastSeen})`);
   ok(rAfter?.online === true, '该端被判定为在线');
+
+  // ============ 场景 11:广播水位被 2099 污染,也必须能广播出数据 ============
+  console.log('\n[场景 11] 本端"广播水位"被 2099 污染 → 仍要能把自己的数据广播出去');
+  const token11 = await freshToken();
+  const S = new Device('devSSSSS-0000-0000-0000-000000000019', token11);
+  S.pushedAt = '2099-01-01T00:00:00.000Z'; // 实测事故:电脑端 lastSyncAt=2099 → 永不广播
+  const s1 = S.write('场景11:水位被污染也要广播出去', today);
+  await S.engine.onLogin();
+  await S.engine.onLocalWrite();
+  await pump([S], 6, '场景11');
+  // 用"只读广播数据、从不索取"的观察者来证明:**数据确实被广播进了中继**
+  // (若水位被 2099 卡死,这里将什么都读不到)
+  const seen = new Map<string, DiaryEntry>();
+  let obsCursor = 0;
+  for (let i = 0; i < 4; i++) {
+    const page = await http<{
+      messages: Array<{ id: number; kind: string; payload: string }>;
+      lastId: number;
+    }>(`/api/relay/pull?from=observer-only&after=${obsCursor}&limit=50`, { token: token11 });
+    for (const m of page.messages) {
+      if (m.kind !== 'data') continue;
+      try {
+        const dec = (await decryptObject(SYNC_KEY, JSON.parse(m.payload))) as { entries?: DiaryEntry[] };
+        for (const e of dec.entries ?? []) seen.set(e.id, e);
+      } catch {
+        /* 忽略 */
+      }
+    }
+    obsCursor = Math.max(obsCursor, page.lastId);
+    await sleep(120);
+  }
+  ok(seen.has(s1.id), '广播水位被污染时,本端增量仍被广播进中继(观察者读到该条)');
+
+  // ============ 场景 12:无人应答的 need 必须在下一个事件重试 ============
+  console.log('\n[场景 12] 第一次 need 无人应答 → 对端上线后重新索取(不能只发一次就放弃)');
+  const token12 = await freshToken();
+  const U = new Device('devUUUUU-0000-0000-0000-000000000021', token12, { requestRetryMs: 50 });
+  const V = new Device('devVVVVV-0000-0000-0000-000000000022', token12);
+  const v1 = V.write('场景12:V 的数据(索取时 V 还不在线)', today, '2026-06-01T00:00:00.000Z');
+  await U.engine.onLogin(); // U 先上线:此时设备表里还没有 V,索取无从谈起
+  await pump([U], 3, '场景12-空转');
+  ok(!U.has(v1.id), 'U 此时确实还没有 V 的数据');
+  await V.engine.onLogin(); // V 上线(会广播"有端加入")
+  await sleep(120); // 让第一次请求超出去重窗口
+  await U.engine.onLogin(); // 再触发一次对账
+  await pump([U, V], 14, '场景12');
+  ok(U.has(v1.id), '对端上线后,U 重新索取并拿到了缺失数据');
 
   console.log(`\n同步合并新增(put 且原本不存在)共 ${putLog.length} 条:`);
   for (const l of putLog) console.log(`   ${l}`);
