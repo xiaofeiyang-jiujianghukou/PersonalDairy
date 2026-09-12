@@ -404,6 +404,14 @@ interface WsLike {
 /** 账号 → 设备 → 连接 */
 const wsClients = new Map<number, Map<string, WsLike>>();
 const WS_PING_MS = 30 * 1000;
+/**
+ * 应用层心跳超时:客户端每 30 秒发一条 {"type":"ping"}。
+ * 为什么要应用层心跳:Android/iOS 冻结后台 App 的 JS 后,WebSocket 的 pong 仍由
+ * **网络协议栈**自动回复 —— 于是"TCP 还连着"会被误判成"在线",而它其实什么都不处理。
+ * 因此在线/存活必须以"JS 真的在发消息"为准:超过该时长没有应用层心跳就断开连接
+ * (客户端恢复后会 onclose → 重连 → 立即对账,数据不会丢)。
+ */
+const WS_APP_PING_TIMEOUT_MS = Number(process.env.WS_APP_PING_TIMEOUT_MS ?? 75 * 1000);
 
 function wakeSockets(uid: number, fromDevice: string, toDevice: string): void {
   const m = wsClients.get(uid);
@@ -465,31 +473,37 @@ app.get('/api/relay/ws', { websocket: true }, (socket, req) => {
     /* 忽略 */
   }
 
-  let alive = true;
+  let lastAppPing = Date.now();
+  // 协议层 ping:只是为了让中间设备(NAT/代理)不回收空闲连接,不作为存活依据
   const ping = setInterval(() => {
-    if (!alive) {
-      clearInterval(ping);
-      try {
-        socket.terminate();
-      } catch {
-        /* 忽略 */
-      }
-      return;
-    }
-    alive = false;
     try {
       socket.ping();
     } catch {
       /* 忽略 */
     }
   }, WS_PING_MS);
+  // 存活依据 = 应用层心跳(JS 真的在跑)
+  const aliveCheck = setInterval(() => {
+    if (Date.now() - lastAppPing <= WS_APP_PING_TIMEOUT_MS) return;
+    clearInterval(aliveCheck);
+    try {
+      socket.close(4408, 'app heartbeat timeout (js suspended?)');
+      socket.terminate();
+    } catch {
+      /* 忽略 */
+    }
+  }, Math.max(1000, Math.min(WS_PING_MS, WS_APP_PING_TIMEOUT_MS)));
 
+  socket.on('message', () => {
+    lastAppPing = Date.now();
+    void deviceSeen(uid, deviceId); // 只有 JS 真的在发消息,才算在线
+  });
   socket.on('pong', () => {
-    alive = true;
-    void deviceSeen(uid, deviceId); // 心跳兼在线刷新
+    /* 网络栈自动回,不足以证明 JS 活着 —— 仅用于维持 TCP */
   });
   const cleanup = (): void => {
     clearInterval(ping);
+    clearInterval(aliveCheck);
     const mm = wsClients.get(uid);
     if (mm && mm.get(deviceId) === (socket as unknown as WsLike)) {
       mm.delete(deviceId);

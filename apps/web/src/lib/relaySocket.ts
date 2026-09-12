@@ -42,6 +42,7 @@ export class RelaySocket {
   private stopped = true;
   private retry = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private keepalive: ReturnType<typeof setInterval> | null = null;
   private openedAt = 0;
 
   constructor(o: RelaySocketOptions) {
@@ -72,6 +73,7 @@ export class RelaySocket {
 
   stop(): void {
     this.stopped = true;
+    this.stopKeepalive();
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -83,6 +85,30 @@ export class RelaySocket {
     }
     this.ws = null;
     this.o.onStatus?.('idle');
+  }
+
+  /**
+   * 应用层心跳(每 30 秒)。
+   * 只发一条 ping,不拉数据 —— 目的有两个:
+   *   ① 让服务端确认"这个客户端的 JS 真的活着"(网络栈自动回的 pong 不能证明这点);
+   *   ② App 被系统冻结时,JS 停摆 → 服务端 75 秒后断开 → 恢复后客户端重连并立即对账。
+   */
+  private startKeepalive(ws: WebSocket): void {
+    this.stopKeepalive();
+    this.keepalive = setInterval(() => {
+      try {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+      } catch {
+        /* 忽略 */
+      }
+    }, 30000);
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepalive) {
+      clearInterval(this.keepalive);
+      this.keepalive = null;
+    }
   }
 
   private scheduleReconnect(): void {
@@ -135,6 +161,7 @@ export class RelaySocket {
       this.openedAt = Date.now();
       this.retry = 0; // 连上即重置退避
       this.o.onStatus?.('open');
+      this.startKeepalive(ws);
       this.o.onOpen?.(); // 重连成功后立刻对账一次
     };
     ws.onmessage = (ev) => {
@@ -150,6 +177,7 @@ export class RelaySocket {
     };
     ws.onclose = () => {
       const lived = Date.now() - this.openedAt;
+      this.stopKeepalive();
       this.ws = null;
       this.o.onStatus?.('closed');
       // 连接稳定存活过一段时间 → 这次失败不算"连续失败",退避从头开始

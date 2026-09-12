@@ -93,7 +93,15 @@ async function startServer(): Promise<void> {
   child = spawn(tsxBin, ['src/index.ts'], {
     cwd: serverDir,
     detached: true,
-    env: { ...process.env, PORT: String(PORT), REDIS_URL: REDIS, DIARY_DATA_DIR: dataDir, CLOUD_MODE: '1' },
+    env: {
+      ...process.env,
+      PORT: String(PORT),
+      REDIS_URL: REDIS,
+      DIARY_DATA_DIR: dataDir,
+      CLOUD_MODE: '1',
+      // 测试里把"应用层心跳超时"压到 3 秒,便于验证"JS 停摆会被判离线"
+      WS_APP_PING_TIMEOUT_MS: '3000',
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stdout?.on('data', (b: Buffer) => {
@@ -206,6 +214,30 @@ async function main(): Promise<void> {
   await req('/api/relay/push', { body: { from: 'dev-WS-A', payload: 'z', kind: 'data' }, token });
   await sleep(600);
   ok(A.msgs.length === aBefore, '发送方自己不会被唤醒');
+
+  // ---------- 应用层心跳:JS 停摆(模拟 App 被系统冻结)必须被判离线 ----------
+  const td = await req<{ ticket?: string }>('/api/relay/ws-ticket', { body: { deviceId: 'dev-WS-SLEEP' }, token });
+  const D = openSocket(String(td.data.ticket));
+  await sleep(600);
+  ok(D.msgs.some((m) => m.type === 'ready'), '被观测端已连接');
+  // 不发应用层心跳 → 服务端应在超时后主动断开(而不是把"TCP 还连着"当成在线)
+  const sleepCode = await Promise.race([D.closed, sleep(6000).then(() => -1)]);
+  ok(sleepCode === 4408, '不发应用层心跳 → 服务端断开(在线状态不再虚报)', `close=${sleepCode}`);
+
+  // 持续发心跳 → 不应被断开
+  const te = await req<{ ticket?: string }>('/api/relay/ws-ticket', { body: { deviceId: 'dev-WS-ALIVE' }, token });
+  const E = openSocket(String(te.data.ticket));
+  await sleep(500);
+  const hb = setInterval(() => {
+    try {
+      E.ws.send(JSON.stringify({ type: 'ping' }));
+    } catch {
+      /* 忽略 */
+    }
+  }, 800);
+  await sleep(5000);
+  clearInterval(hb);
+  ok(E.ws.readyState === WebSocket.OPEN, '持续发心跳的连接保持在线');
 
   // ---------- 断线后长轮询兜底 ----------
   B.ws.close();
