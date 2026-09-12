@@ -161,15 +161,22 @@ async function maybeTrim(uid: number): Promise<void> {
     }),
   );
   const minSeq = Math.min(...vals);
-  if (minSeq <= 0) return;
   const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
-  const rows = await r.xrange(evKey(uid), '-', `${minSeq}-0`);
+  // 新协议(每设备信箱)已不再读这条共享日志,只有未升级的旧客户端会拉 —— 因此:
+  //   · 旧客户端仍在拉:按"所有端都消费到"删(下面的 minSeq 逻辑);
+  //   · 已经没人拉了(游标不再前进):仅按保留期删,避免日志无限增长。
+  const bound = minSeq > 0 ? `${minSeq}-0` : '+';
+  const rows = await r.xrange(evKey(uid), '-', bound);
   if (!rows.length) return;
   const del: string[] = [];
   for (const [id, fields] of rows) {
     let ts = 0;
     for (let i = 0; i < fields.length; i += 2) if (fields[i] === 'ts') ts = Number(fields[i + 1] ?? '0') || 0;
-    if (ts && ts < cutoff) del.push(String(id));
+    if (!ts || ts >= cutoff) continue;
+    // 有活跃旧客户端时:只删它已经消费过的;没有活跃游标时:按保留期删
+    const seq = Number(String(id).split('-')[0]) || 0;
+    if (minSeq > 0 && seq > minSeq) continue;
+    del.push(String(id));
   }
   if (del.length) await r.xdel(evKey(uid), ...del);
 }
