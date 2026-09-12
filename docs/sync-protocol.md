@@ -76,18 +76,30 @@ D/E/F 各自 hello ──► 服务端选举主端：
 | `POST /api/relay/notify` | "我更新到 xxxa"（广播，元数据） |
 | `POST /api/relay/need` | "把 origin 在 (from, to] 的数据给我"（定向，元数据） |
 | `POST /api/relay/push` | 推数据（`kind:'data'`，`to` 定向或空=广播），载荷为密文 |
-| `GET  /api/relay/pull` | 按游标拉取（自动过滤：不回自己的、跳过定向给别人的） |
-| `POST /api/relay/wait` | 长轮询实时唤醒（毫秒级；不用 XREAD BLOCK，避免占用共享连接） |
+| `GET  /api/relay/mbox` | **取走自己的信箱**（取走即消费，无游标）—— 新协议的收件方式 |
+| `POST /api/relay/wait` | 长轮询兜底：只问"我的信箱里有没有东西"（不带任何位置信息） |
+| `GET  /api/relay/pull` | 遗留：给未升级的旧客户端按游标拉共享日志（新客户端不使用） |
 
 Redis 结构（每账号一套）：
 
 ```
-trans:{uid}:events        Redis Stream，消息带 kind(data|notify|need) 与 to(定向)，ID = <seq>-0
-trans:{uid}:seq           顺序号分配
-trans:{uid}:offset:{dev}  每端消费游标（30 天过期）
-trans:{uid}:devices       终端集合（用于"全部消费后删除"）
+trans:{uid}:mbox:{dev}    每设备信箱(LIST)：给这台设备的东西投进来，**取走即消费**
 trans:{uid}:reg           终端注册表：deviceId → {watermark, vector, count, loginAt, lastSeen}
+trans:{uid}:events        遗留共享日志(Stream)，只服务未升级的旧客户端
+trans:{uid}:offset:{dev}  遗留游标，同上
+trans:{uid}:devices       终端集合(遗留清理用)
 ```
+
+### 为什么没有游标（重要）
+需求方的模型是**纯时间区间驱动**：看到对端水位更高 → 只索取那段时间的数据。
+"读到第几条"（游标）是**消息日志的传输层位置**，与"该同步什么数据"无关。
+曾经因为它产生了真实故障：服务端会过滤掉"不是我自己的/定向给别人的"消息，
+客户端却用"这一页有几条"判断是否读完 → 游标被钉死、数据永远追不上。
+
+现在收件改为**每设备信箱**：
+- 给某台设备的东西（补传的数据、发给它的请求、广播类信号）直接投进它的信箱；
+- 客户端**取走即消费**，位置由队列自身表达，协议里不存在"位置"这个概念；
+- 请求没被应答（对端离线/睡着）→ 请求端在下一个事件**重新索取**，不需要任何排队位置。
 
 ## 5. 唤醒通道:WebSocket 为主,长轮询兜底
 
@@ -144,6 +156,7 @@ location /api/relay/ws {
 
 | 触发（事件） | 动作 |
 |---|---|
+| 服务端把东西投进我的信箱 | WebSocket 推 `{type:'wake'}` → 取件（`/api/relay/mbox`）并处理 |
 | 登录 / 冷启动 | `autoSync()`：hello 握手 → 按需补传 → 拉净 |
 | 服务端有新消息 | 长轮询被唤醒（服务端挂起，有新消息才返回）→ 拉取并处理 notify / need / 数据 |
 | 收到某个端的 notify / "有端加入" | 按**来源**逐条比对水位向量 → 定向索取缺口（条目数更多则要一次全量） |

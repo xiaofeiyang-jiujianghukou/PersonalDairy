@@ -315,3 +315,61 @@ export function pickLeader(devices: DeviceInfo[]): string | null {
   return sorted[0]?.deviceId ?? null;
 }
 
+
+// ==================== 每设备信箱(替代"共享日志 + 游标") ====================
+/**
+ * 设计:协议里不再有"我读到第几条"这种位置概念。
+ *
+ *   · 给某台设备的东西(补传的数据、给它的请求) → 投进**它自己的信箱**(Redis LIST);
+ *   · 客户端取走即消费(LPOP 语义),位置由队列本身表达,不会再出现
+ *     "游标跑到前面/卡在后面导致永远漏收"这类问题;
+ *   · 信箱带过期时间,长期不来的设备不会无限堆积。
+ *
+ * 说明:旧的共享 Stream(/api/relay/pull|wait,带游标)继续保留,只服务于尚未升级的
+ * 旧客户端;新客户端完全不使用它。
+ */
+const MBOX_TTL = 7 * 24 * 3600;
+const mboxKey = (uid: number, deviceId: string) => `trans:${uid}:mbox:${deviceId}`;
+
+/** 投递一条给指定设备。 */
+export async function mboxPush(uid: number, deviceId: string, payload: string): Promise<void> {
+  if (!deviceId) return;
+  const r = c();
+  const k = mboxKey(uid, deviceId);
+  await r.rpush(k, payload);
+  await r.expire(k, MBOX_TTL);
+}
+
+/** 投递给该账号**除 exclude 之外**的所有已注册设备(用于广播类信号)。 */
+export async function mboxPushToOthers(uid: number, exclude: string, payload: string): Promise<number> {
+  const devices = await deviceList(uid);
+  let n = 0;
+  for (const d of devices) {
+    if (d.deviceId === exclude) continue;
+    await mboxPush(uid, d.deviceId, payload);
+    n++;
+  }
+  return n;
+}
+
+/** 取走该设备信箱里的最多 limit 条(取走即消费,原子操作)。 */
+export async function mboxDrain(uid: number, deviceId: string, limit = 50): Promise<string[]> {
+  if (!deviceId) return [];
+  const r = c();
+  const k = mboxKey(uid, deviceId);
+  const items = (await r.eval(
+    `local items = redis.call('LRANGE', KEYS[1], 0, tonumber(ARGV[1]) - 1)
+     if #items > 0 then redis.call('LTRIM', KEYS[1], #items, -1) end
+     return items`,
+    1,
+    k,
+    String(Math.max(1, limit)),
+  )) as unknown as string[];
+  return Array.isArray(items) ? items : [];
+}
+
+/** 信箱里还有多少条(诊断用)。 */
+export async function mboxLen(uid: number, deviceId: string): Promise<number> {
+  const r = c();
+  return Number(await r.llen(mboxKey(uid, deviceId))) || 0;
+}

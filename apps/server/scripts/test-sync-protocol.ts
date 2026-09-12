@@ -119,9 +119,10 @@ function makeTransport(deviceId: string, token: string): SyncTransport {
       await http('/api/relay/need', { body: { ...p, from: deviceId, payload }, token });
     },
     push: (p) => http('/api/relay/push', { body: { from: deviceId, to: p.to, payload: p.payload, kind: 'data' }, token }),
-    pull: (p) =>
-      http(`/api/relay/pull?from=${encodeURIComponent(deviceId)}&after=${p.after}&limit=${p.limit}`, { token }),
-    wait: (p) => http('/api/relay/wait', { body: { from: deviceId, after: p.after }, token }),
+    // 新协议:取走自己的信箱(取走即消费,无游标)
+    drainMailbox: (p) =>
+      http(`/api/relay/mbox?from=${encodeURIComponent(deviceId)}&limit=${p.limit}`, { token }),
+    wait: (p) => http('/api/relay/wait', { body: { from: deviceId }, token }),
   };
 }
 
@@ -129,7 +130,6 @@ class Device {
   readonly id: string;
   readonly box: Stored = { entries: new Map(), images: new Map() };
   readonly engine: SyncEngine;
-  cursor = 0;
   pushedAt = '';
   private seq = 0;
 
@@ -145,10 +145,6 @@ class Device {
         decrypt: (o) => decryptObject(SYNC_KEY, o),
       },
       state: {
-        getCursor: () => this.cursor,
-        setCursor: (n) => {
-          this.cursor = n;
-        },
         getPushedAt: () => this.pushedAt,
         setPushedAt: (v) => {
           this.pushedAt = v;
@@ -666,6 +662,26 @@ async function main(): Promise<void> {
   await T2.engine.onLogin();
   const lead2 = (await http<{ leader: string | null }>('/api/relay/devices', { token: token14 })).leader;
   ok(lead2 === T2.id, `谁更新时间最新谁就是老大 → T2 接任(实际 ${String(lead2).slice(0, 6)})`);
+
+  // ============ 场景 15:信箱内容超过一页时,必须全部取完 ============
+  console.log('\n[场景 15] 信箱里积压超过一页 → 单次 drain 必须全部取完(不看"页满没满")');
+  const token15 = await freshToken();
+  const A15 = new Device('devAAA15-0000-0000-0000-0000000000025', token15);
+  const B15 = new Device('devBBB15-0000-0000-0000-0000000000026', token15);
+  await A15.engine.onLogin();
+  await B15.engine.onLogin();
+  await pump([A15, B15], 4, '场景15-准备');
+  // 连续写 25 条(远超一页 15)→ 全部会投进 B15 的信箱
+  const made: string[] = [];
+  for (let i = 0; i < 25; i++) {
+    const e = A15.write(`场景15:第 ${i + 1} 条`, today, new Date(Date.now() + i * 1000).toISOString());
+    made.push(e.id);
+  }
+  await A15.engine.onLocalWrite();
+  await pump([A15], 4, '场景15-写侧');
+  await B15.engine.drain(); // 只取一次
+  const missed = made.filter((id) => !B15.has(id));
+  ok(missed.length === 0, `B 一次取件拿到全部 25 条(缺 ${missed.length} 条)`);
 
   console.log(`\n同步合并新增(put 且原本不存在)共 ${putLog.length} 条:`);
   for (const l of putLog) console.log(`   ${l}`);

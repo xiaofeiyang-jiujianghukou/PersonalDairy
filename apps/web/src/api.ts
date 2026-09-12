@@ -540,15 +540,16 @@ function makeEngineTransport(deviceId: string): SyncTransport {
         body: JSON.stringify({ from: deviceId, to: p.to, payload: p.payload, kind: 'data' }),
       });
     },
-    pull: (p) =>
-      http<{ messages: []; lastId: number }>(
-        `/api/relay/pull?from=${encodeURIComponent(deviceId)}&after=${p.after}&limit=${p.limit}`,
+    // 取走自己的信箱(取走即消费,无游标)
+    drainMailbox: (p) =>
+      http<{ messages: []; remaining?: number }>(
+        `/api/relay/mbox?from=${encodeURIComponent(deviceId)}&limit=${p.limit}`,
       ),
     wait: (p) =>
-      // 服务端会把请求挂起最长 20 秒,所以这里超时必须更宽,否则会被误判成失败
+      // 只问"有没有"(不带位置);服务端挂起最长 20 秒,超时留足余量
       http<{ hasNew: boolean }>(
         '/api/relay/wait',
-        { method: 'POST', body: JSON.stringify({ from: deviceId, after: p.after }) },
+        { method: 'POST', body: JSON.stringify({ from: deviceId }) },
         40_000,
       ),
   };
@@ -582,9 +583,7 @@ export function getSyncEngine(): SyncEngine {
       decrypt: (o) => decryptObject(requireSyncKey(), o as never),
     },
     state: {
-      getCursor: () => getRelayCursor(),
-      setCursor: (n) => setRelayCursor(n),
-      // 广播水位沿用既有的 lastSyncAt(老版本就有,升级后接着用,避免全量重推)
+      // 新协议没有游标:收件走"每设备信箱",取走即消费
       getPushedAt: () => getLastSyncAt(),
       setPushedAt: (v) => setLastSyncAt(v),
     },

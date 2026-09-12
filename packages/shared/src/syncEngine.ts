@@ -84,8 +84,13 @@ export interface SyncTransport {
   }): Promise<void>;
   /** 定向推送一批加密数据给 to。 */
   push(p: { deviceId: string; to: string; payload: string }): Promise<void>;
-  pull(p: { deviceId: string; after: number; limit: number }): Promise<{ messages: SyncMessage[]; lastId: number }>;
-  wait(p: { deviceId: string; after: number }): Promise<{ hasNew: boolean }>;
+  /**
+   * 取走自己的信箱(取走即消费,协议里没有"位置/游标")。
+   * 服务端只把"给这台设备的"东西投进来:补传的数据、发给它的请求、广播类信号。
+   */
+  drainMailbox(p: { deviceId: string; limit: number }): Promise<{ messages: SyncMessage[]; remaining?: number }>;
+  /** 长轮询兜底:只问"有没有"(不含任何位置信息)。 */
+  wait(p: { deviceId: string }): Promise<{ hasNew: boolean }>;
 }
 
 export interface SyncStore {
@@ -107,9 +112,10 @@ export interface SyncEngineOptions {
   store: SyncStore;
   cipher: SyncCipher;
   state: {
-    getCursor(): number;
-    setCursor(n: number): void;
-    /** 广播水位(上次"兼容广播"推到哪里)。用于只推增量,避免全量重推。 */
+    /**
+     * 广播水位(上次"兼容广播"推到哪里),用于只推增量。
+     * 注意:这里**没有游标** —— 新协议按时间区间协商,收件靠"每设备信箱"(取走即消费)。
+     */
     getPushedAt?(): string;
     setPushedAt?(v: string): void;
   };
@@ -185,7 +191,15 @@ export class SyncEngine {
   private leader: string | null = null;
   private busy = false;
   /** 诊断:最近一次同步/错误情况(界面上可直接显示,便于实机排查)。 */
-  private diag = { lastSyncAt: '', lastError: '', lastErrorAt: '', lastMerged: 0, lastRequested: 0, leader: '' };
+  private diag = {
+    lastSyncAt: '',
+    lastError: '',
+    lastErrorAt: '',
+    lastMerged: 0,
+    lastHandled: 0,
+    lastRequested: 0,
+    leader: '',
+  };
 
   constructor(opts: SyncEngineOptions) {
     this.o = opts as never;
@@ -256,12 +270,11 @@ export class SyncEngine {
     lastError: string;
     lastErrorAt: string;
     lastMerged: number;
+    lastHandled: number;
     lastRequested: number;
     leader: string;
-    cursor: number;
   } {
-    // cursor = 本机已消费到中继的哪一条。它若跑到消息流前面,就会出现"永远漏收"。
-    return { ...this.diag, leader: this.leader ?? '', cursor: this.o.state.getCursor() };
+    return { ...this.diag, leader: this.leader ?? '' };
   }
 
   private fail(stage: string, e: unknown): void {
@@ -450,39 +463,41 @@ export class SyncEngine {
 
   // ---------------- 拉取并处理控制/数据消息 ----------------
   /** 把云端消息拉到本地(分页),处理 data/notify/need。返回合并条数。 */
+  /**
+   * 收件:反复取走自己信箱里的消息并处理,直到信箱为空。
+   * 没有游标 —— 取走即消费;服务端只投"给这台设备的"消息,所以不存在
+   * "页里全是别人的消息导致卡住"这种问题。
+   */
   async drain(): Promise<{ merged: number }> {
-    const pageSize = this.o.pageSize ?? 15;
-    let cursor = this.o.state.getCursor();
+    const pageSize = this.o.pageSize ?? 50;
     let merged = 0;
+    let handled = 0;
     for (let guard = 0; guard < 500; guard++) {
-      let page: { messages: SyncMessage[]; lastId: number };
+      let page: { messages: SyncMessage[]; remaining?: number };
       try {
-        page = await this.o.transport.pull({ deviceId: this.o.deviceId, after: cursor, limit: pageSize });
+        page = await this.o.transport.drainMailbox({ deviceId: this.o.deviceId, limit: pageSize });
       } catch (e) {
-        this.fail('拉取 pull', e);
+        this.fail('取件 drainMailbox', e);
         break;
       }
       const msgs = page.messages ?? [];
       if (!msgs.length) break;
-      let pageMax = cursor;
+      handled += msgs.length;
       for (const m of msgs) {
-        if (m.id > pageMax) pageMax = m.id;
         try {
           merged += await this.handle(m);
         } catch (e) {
-          this.fail(`处理消息 ${m.id}(${m.kind})`, e);
+          this.fail(`处理消息(${m.kind})`, e);
         }
       }
-      cursor = Math.max(pageMax, page.lastId);
-      this.o.state.setCursor(cursor);
-      if (msgs.length < pageSize) break;
+      if (msgs.length < pageSize) break; // 信箱已取空
     }
     this.diag.lastMerged = merged;
+    this.diag.lastHandled = handled;
     this.diag.lastSyncAt = new Date().toISOString();
     if (merged > 0) {
       this.o.onChange?.();
-      // 合并后立刻把新的水位/向量/条目数上报(不阻塞主流程),否则服务端设备表里
-      // 一直是这台端"合并之前"的过期快照 —— 会让其它端误判谁领先、也会误导排查。
+      // 合并后立刻上报新水位/向量/条目数,避免服务端设备表里是合并前的过期快照
       void this.heartbeat();
     }
     return { merged };
@@ -680,16 +695,18 @@ export class SyncEngine {
   }
 
   /** 长轮询等待 → 有变化就拉取处理;返回是否处理了消息。 */
-  async waitAndPull(timeoutMs = 25000): Promise<boolean> {
-    const cursor = this.o.state.getCursor();
+  /**
+   * 长轮询兜底:等一个"有东西了"的信号(WS 不可用时才用),然后取件。
+   * 注意这里不传任何位置 —— 只问"有没有",然后直接取信箱。
+   */
+  async waitAndPull(): Promise<boolean> {
     let hasNew = false;
     try {
-      const r = await this.o.transport.wait({ deviceId: this.o.deviceId, after: cursor });
+      const r = await this.o.transport.wait({ deviceId: this.o.deviceId });
       hasNew = Boolean(r?.hasNew);
     } catch {
       return false;
     }
-    if (!hasNew) return false;
     const { merged } = await this.drain();
     return merged > 0 || hasNew;
   }

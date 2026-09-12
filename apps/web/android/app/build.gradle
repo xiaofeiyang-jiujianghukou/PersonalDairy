@@ -17,8 +17,8 @@ android {
         applicationId "com.personaldiary.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 35
-        versionName "0.10.5"
+        versionCode 36
+        versionName "0.11.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // 只保留真机架构(arm),排除仅模拟器需要的 x86/x86_64 → APK 立减约 11MB
         ndk {

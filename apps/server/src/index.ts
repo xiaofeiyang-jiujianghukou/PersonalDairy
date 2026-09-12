@@ -60,6 +60,10 @@ import {
   deviceList,
   deviceSeen,
   pickLeader,
+  mboxPush,
+  mboxPushToOthers,
+  mboxDrain,
+  mboxLen,
   type DeviceInfo,
   type RelayKind,
 } from './relayRedis.js';
@@ -553,8 +557,14 @@ app.post('/api/relay/push', async (req, reply) => {
     return reply.code(400).send({ error: '无效的载荷' });
   }
   const k: RelayKind = kind === 'notify' || kind === 'need' ? kind : 'data';
-  await relayPush(user.id, from, payload, k, typeof to === 'string' ? to : '');
-  wakeRelayWaiters(user.id, from, to); // 实时唤醒(本进程内存)
+  const target = typeof to === 'string' ? to : '';
+  // 新协议:不看日志位置,直接把消息投进收件设备的信箱(取走即消费)
+  const envelope = JSON.stringify({ kind: k, from, payload, to: target });
+  if (target) await mboxPush(user.id, target, envelope);
+  else await mboxPushToOthers(user.id, from, envelope);
+  // 旧的共享日志照常写:只服务于尚未升级的旧客户端(它们还在用游标拉取)
+  await relayPush(user.id, from, payload, k, target);
+  wakeRelayWaiters(user.id, from, target); // 实时唤醒(本进程内存 + WebSocket)
   return { ok: true };
 });
 
@@ -576,6 +586,11 @@ app.post('/api/relay/wait', async (req) => {
   // 长轮询请求本身就是在线上报:客户端每 ≤20 秒就会重新挂一次 → 在线状态始终准确,
   // 且**不需要额外的定时心跳**。必须在挂起之前刷新(挂起期间不算"刚出现")。
   if (f) await deviceSeen(user.id, f);
+  // 新协议(无游标):客户端不带 after → 只问"我的信箱里有没有东西"
+  if (typeof after !== 'number') {
+    if ((await mboxLen(user.id, f)) > 0) return { hasNew: true };
+    return relayWaitOnce(user.id, f, 0);
+  }
   const a = Number(after) || 0;
   if (await relayHasNew(user.id, a, f)) return { hasNew: true };
   return relayWaitOnce(user.id, f, a);
@@ -591,6 +606,27 @@ app.post('/api/relay/cursor', async (req) => {
   return { ok: true };
 });
 
+
+// ---------- 信箱:新协议的收件方式(无游标,取走即消费) ----------
+app.get('/api/relay/mbox', async (req) => {
+  const user = (req as AuthedRequest).user!;
+  const from = String((req.query as { from?: string }).from ?? '');
+  const limit = Math.max(1, Math.min(Number((req.query as { limit?: string }).limit) || 50, 200));
+  if (!from) return { messages: [] };
+  await deviceSeen(user.id, from); // 取件即"我还在"
+  const raw = await mboxDrain(user.id, from, limit);
+  const messages = raw
+    .map((x, i) => {
+      try {
+        const o = JSON.parse(x) as { kind?: string; from?: string; payload?: string; to?: string };
+        return { seq: i + 1, kind: o.kind ?? 'data', from: String(o.from ?? ''), to: String(o.to ?? ''), payload: String(o.payload ?? '') };
+      } catch {
+        return null;
+      }
+    })
+    .filter((x): x is { seq: number; kind: string; from: string; to: string; payload: string } => Boolean(x));
+  return { messages, remaining: await mboxLen(user.id, from) };
+});
 
 // ---------- 同步控制面:设备注册 / 水位线协商 / 主端选举 ----------
 // 设计(按用户方案):
@@ -630,6 +666,7 @@ app.post('/api/relay/hello', async (req, reply) => {
     const info = JSON.stringify({
       plain: { watermark: self.watermark, vector: self.vector, count: self.count },
     });
+    await mboxPushToOthers(user.id, from, JSON.stringify({ kind: 'notify', from, payload: info, to: '' }));
     await relayPush(user.id, from, info, 'notify', '');
     wakeRelayWaiters(user.id, from, '');
   }
@@ -669,6 +706,7 @@ app.post('/api/relay/notify', async (req, reply) => {
   if (typeof from !== 'string' || !from) return reply.code(400).send({ error: '缺少 from' });
   await deviceTouch(user.id, from, String(watermark ?? ''), vector ?? {}, Number(count) || 0);
   const body = typeof payload === 'string' && payload ? payload : JSON.stringify({ plain: { watermark } });
+  await mboxPushToOthers(user.id, from, JSON.stringify({ kind: 'notify', from, payload: body, to: '' }));
   await relayPush(user.id, from, body, 'notify', '');
   wakeRelayWaiters(user.id, from, '');
   return { ok: true };
@@ -702,6 +740,7 @@ app.post('/api/relay/need', async (req, reply) => {
             toWatermark: String(toWatermark ?? ''),
           },
         });
+  await mboxPush(user.id, to, JSON.stringify({ kind: 'need', from, payload: needBody, to }));
   await relayPush(user.id, from, needBody, 'need', to);
   wakeRelayWaiters(user.id, from, to);
   return { ok: true, reachable };

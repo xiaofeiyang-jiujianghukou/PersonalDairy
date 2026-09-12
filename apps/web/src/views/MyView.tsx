@@ -18,7 +18,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
   const [channel, setChannel] = useState<'ws' | 'poll'>(getSyncChannel());
   const [localCount, setLocalCount] = useState<number | null>(null);
   const [localWatermark, setLocalWatermark] = useState('');
-  const [diag, setDiag] = useState<{ lastSyncAt: string; lastError: string; lastErrorAt: string; leader: string; cursor: number } | null>(null);
+  const [diag, setDiag] = useState<{ lastSyncAt: string; lastError: string; lastErrorAt: string; lastHandled: number } | null>(null);
   useEffect(() => {
     let alive = true;
     const refresh = async (): Promise<void> => {
@@ -135,7 +135,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
         {diag && (
           <>
             <br />
-            上次同步 {diag.lastSyncAt ? new Date(diag.lastSyncAt).toLocaleTimeString('zh-CN', { hour12: false }) : '—'} · 游标 {diag.cursor}
+            上次同步 {diag.lastSyncAt ? new Date(diag.lastSyncAt).toLocaleTimeString('zh-CN', { hour12: false }) : '—'} · 收件 {diag.lastHandled} 条
             {diag.lastError && (
               <span style={{ color: '#c0392b' }}>
                 {' '}
