@@ -18,6 +18,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
   const [channel, setChannel] = useState<'ws' | 'poll'>(getSyncChannel());
   const [localCount, setLocalCount] = useState<number | null>(null);
   const [localWatermark, setLocalWatermark] = useState('');
+  const [diag, setDiag] = useState<{ lastSyncAt: string; lastError: string; lastErrorAt: string; leader: string; cursor: number } | null>(null);
   useEffect(() => {
     let alive = true;
     const refresh = async (): Promise<void> => {
@@ -28,6 +29,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
         if (!alive) return;
         setLocalCount(n);
         setLocalWatermark(wm);
+        setDiag(eng.diagnostics());
       } catch {
         /* 未登录/未配对时忽略 */
       }
@@ -128,6 +130,19 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
           <>
             <br />
             本机 {localCount} 条 · 最后更新 {localWatermark ? new Date(localWatermark).toLocaleString('zh-CN', { hour12: false }) : '(空)'}
+          </>
+        )}
+        {diag && (
+          <>
+            <br />
+            上次同步 {diag.lastSyncAt ? new Date(diag.lastSyncAt).toLocaleTimeString('zh-CN', { hour12: false }) : '—'} · 游标 {diag.cursor}
+            {diag.lastError && (
+              <span style={{ color: '#c0392b' }}>
+                {' '}
+                · 最近错误 {diag.lastErrorAt ? new Date(diag.lastErrorAt).toLocaleTimeString('zh-CN', { hour12: false }) : ''}
+                :{diag.lastError}
+              </span>
+            )}
           </>
         )}
       </p>

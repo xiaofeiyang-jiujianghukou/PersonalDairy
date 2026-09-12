@@ -184,6 +184,8 @@ export class SyncEngine {
   private readonly requested = new Map<string, number>();
   private leader: string | null = null;
   private busy = false;
+  /** 诊断:最近一次同步/错误情况(界面上可直接显示,便于实机排查)。 */
+  private diag = { lastSyncAt: '', lastError: '', lastErrorAt: '', lastMerged: 0, lastRequested: 0, leader: '' };
 
   constructor(opts: SyncEngineOptions) {
     this.o = opts as never;
@@ -246,6 +248,26 @@ export class SyncEngine {
 
   getLeader(): string | null {
     return this.leader;
+  }
+
+  /** 同步诊断快照(全本地状态,供界面展示)。 */
+  diagnostics(): {
+    lastSyncAt: string;
+    lastError: string;
+    lastErrorAt: string;
+    lastMerged: number;
+    lastRequested: number;
+    leader: string;
+    cursor: number;
+  } {
+    // cursor = 本机已消费到中继的哪一条。它若跑到消息流前面,就会出现"永远漏收"。
+    return { ...this.diag, leader: this.leader ?? '', cursor: this.o.state.getCursor() };
+  }
+
+  private fail(stage: string, e: unknown): void {
+    this.diag.lastError = `${stage}: ${(e as Error)?.message ?? String(e)}`;
+    this.diag.lastErrorAt = new Date().toISOString();
+    this.log(`✖ ${this.diag.lastError}`);
   }
 
   // ---------------- 写入端:广播"我更新了" ----------------
@@ -335,7 +357,7 @@ export class SyncEngine {
       this.leader = r.leader;
       devices = r.devices ?? [];
     } catch (e) {
-      this.log(`hello 失败:${(e as Error).message}`);
+      this.fail('握手 hello', e);
       return { requested: 0, leader: null };
     }
     this.log(
@@ -406,7 +428,7 @@ export class SyncEngine {
       this.log(`need ${to.slice(0, 8)} origin=${(origin || '(全部)').slice(0, 8)} 区间(${fromWm || '空'}, ${toWm}]`);
     } catch (e) {
       this.requested.delete(key);
-      this.log(`need 失败:${(e as Error).message}`);
+      this.fail('发起索取 need', e);
     }
   }
 
@@ -437,7 +459,7 @@ export class SyncEngine {
       try {
         page = await this.o.transport.pull({ deviceId: this.o.deviceId, after: cursor, limit: pageSize });
       } catch (e) {
-        this.log(`pull 失败:${(e as Error).message}`);
+        this.fail('拉取 pull', e);
         break;
       }
       const msgs = page.messages ?? [];
@@ -448,13 +470,15 @@ export class SyncEngine {
         try {
           merged += await this.handle(m);
         } catch (e) {
-          this.log(`处理消息 ${m.id}(${m.kind})出错:${(e as Error).message}`);
+          this.fail(`处理消息 ${m.id}(${m.kind})`, e);
         }
       }
       cursor = Math.max(pageMax, page.lastId);
       this.o.state.setCursor(cursor);
       if (msgs.length < pageSize) break;
     }
+    this.diag.lastMerged = merged;
+    this.diag.lastSyncAt = new Date().toISOString();
     if (merged > 0) {
       this.o.onChange?.();
       // 合并后立刻把新的水位/向量/条目数上报(不阻塞主流程),否则服务端设备表里
