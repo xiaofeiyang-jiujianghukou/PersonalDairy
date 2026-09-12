@@ -140,6 +140,26 @@ function plausibleTime(iso: string, now = Date.now()): boolean {
   return Number.isFinite(t) && t <= now + FUTURE_SKEW_MS;
 }
 
+/**
+ * 把条目的 updatedAt 规范化为"合理时间"(幂等)。
+ *
+ * 历史包袱:早期 LWW 测试为了让"删除"必胜,把墓碑 updatedAt 写成了 2099-01-01。
+ * 这类值不但会顶高水位,还会在合并时"永远更新"从而压住真实修改。
+ * 规范化规则:updatedAt 合理 → 原样返回;不合理 → 退回 deletedAt(删除时刻,语义最贴近)
+ * → 再退 createdAt → 再退"现在"。
+ *
+ * 在"写入本地前"调用(本地修复 + 合并对端数据),因此无论数据从哪来都会被修正,
+ * 各端独立自愈后自然收敛到同一时间,不需要手工改数据库。
+ */
+export function normalizeEntryTimestamps<
+  T extends { updatedAt?: string; createdAt?: string; deletedAt?: string | null },
+>(e: T, now = Date.now()): T {
+  if (plausibleTime(String(e.updatedAt ?? ''), now)) return e;
+  const candidates = [e.deletedAt ?? '', e.createdAt ?? ''];
+  const fallback = candidates.find((c) => plausibleTime(c, now)) || new Date(now).toISOString();
+  return { ...e, updatedAt: fallback };
+}
+
 /** 从 markdown 里抽出媒体引用 id(与 apps/web 的 extractMediaIds 行为一致的最小实现)。 */
 function mediaIdsOf(content: string): string[] {
   const out: string[] = [];
@@ -177,6 +197,26 @@ export class SyncEngine {
       if (u && u > wm && plausibleTime(u, now)) wm = u;
     }
     return wm;
+  }
+
+  /**
+   * 本地自愈:把库里 updatedAt 异常的条目规范化后写回。
+   * 例:早期测试留下的 2099 墓碑 → 改成其 deletedAt(删除时刻)。
+   * 幂等、可反复调用;每次登录跑一次,代价是一次全表扫描。
+   */
+  async repairLocalTimestamps(): Promise<number> {
+    const all = await this.o.store.all();
+    const now = Date.now();
+    const fixed: DiaryEntry[] = [];
+    for (const e of all) {
+      const n = normalizeEntryTimestamps(e, now);
+      if (n.updatedAt !== e.updatedAt) fixed.push(n);
+    }
+    if (fixed.length) {
+      await this.o.store.put(fixed);
+      this.log(`本地时间自愈 ${fixed.length} 条(异常未来时间 → 真实时间)`);
+    }
+    return fixed.length;
   }
 
   /** 本地条目数(含墓碑;同步收敛后各端应一致,不一致说明有缺口)。 */
@@ -230,7 +270,9 @@ export class SyncEngine {
   async broadcastDelta(): Promise<number> {
     const since = this.o.state.getPushedAt?.() ?? '';
     const all = await this.o.store.all();
+    const now = Date.now();
     const delta = all
+      .map((e) => normalizeEntryTimestamps(e, now))
       .filter((e) => e.updatedAt && (!since || e.updatedAt > since))
       .sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : 1));
     if (!delta.length) return 0;
@@ -267,6 +309,7 @@ export class SyncEngine {
 
   // ---------------- 登录/上线:握手 + 按需补齐 ----------------
   async onLogin(): Promise<{ requested: number; leader: string | null }> {
+    await this.repairLocalTimestamps(); // 先自愈历史异常时间,再谈水位
     const wm = await this.watermark();
     const vector = await this.watermarkVector();
     const count = await this.count();
@@ -463,10 +506,12 @@ export class SyncEngine {
   async mergeEntries(remote: DiaryEntry[]): Promise<number> {
     if (!remote.length) return 0;
     const local = await this.o.store.all();
+    const now = Date.now();
     const map = new Map(local.map((e) => [e.id, e]));
     const toWrite: DiaryEntry[] = [];
-    for (const e of remote) {
-      if (!e?.id || !e.date) continue;
+    for (const raw of remote) {
+      if (!raw?.id || !raw.date) continue;
+      const e = normalizeEntryTimestamps(raw, now); // 对端带来的异常时间也要修正
       const cur = map.get(e.id);
       if (!cur || String(e.updatedAt ?? '') > String(cur.updatedAt ?? '')) toWrite.push(e);
     }
@@ -480,6 +525,7 @@ export class SyncEngine {
     const all = await this.o.store.all();
     const now = Date.now();
     const picked = all
+      .map((e) => normalizeEntryTimestamps(e, now))
       .filter((e) => {
         if (origin && (e.deviceId || 'unknown') !== origin) return false;
         const u = String(e.updatedAt ?? '');

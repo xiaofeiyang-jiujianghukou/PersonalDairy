@@ -480,6 +480,48 @@ async function main(): Promise<void> {
   await pump([J, K], 12, '场景6');
   ok(K.has(j2.id), 'K 拿到了正常时间的新条目(水位未被 2099 顶死)');
 
+  // ================= 场景 7:2099 墓碑自愈(两端独立自愈后收敛到同一真实时间) =================
+  console.log('\n[场景 7] 两端都持有 2099 墓碑 → 各自自愈 → 收敛到真实时间,且不再压住新修改');
+  const token7 = await freshToken();
+  const L = new Device('devLLLLL-0000-0000-0000-000000000012', token7);
+  const M = new Device('devMMMMM-0000-0000-0000-000000000013', token7);
+  const tomb = {
+    id: 'tomb-7',
+    date: today,
+    content: '',
+    deviceId: L.id,
+    createdAt: '2026-03-01T00:00:00.000Z',
+    updatedAt: '2099-01-01T00:00:00.000Z',
+    deletedAt: '2026-03-02T00:00:00.000Z',
+  };
+  L.box.entries.set(tomb.id, { ...tomb });
+  M.box.entries.set(tomb.id, { ...tomb });
+  await L.engine.onLogin(); // 登录时自愈
+  await M.engine.onLogin();
+  const lTomb = L.box.entries.get(tomb.id);
+  ok(lTomb?.updatedAt === '2026-03-02T00:00:00.000Z', `L 本地自愈:2099 → 删除时刻(实际 ${lTomb?.updatedAt})`);
+  const lw7 = await L.engine.watermark();
+  ok(lw7 < '2099-01-01T00:00:00.000Z', `L 水位恢复为真实时间(${lw7 || '(空)'})`);
+  await pump([L, M], 10, '场景7');
+  ok(
+    L.box.entries.get(tomb.id)?.updatedAt === M.box.entries.get(tomb.id)?.updatedAt,
+    '两端该条目时间一致(自愈结果收敛)',
+  );
+  // 关键:自愈后,同一 id 的新修改应能正常覆盖(以前 2099 会永久压住真实修改)
+  const revive: DiaryEntry = {
+    id: tomb.id,
+    date: today,
+    content: '场景7:又被写回来了',
+    deviceId: M.id,
+    createdAt: '2026-03-01T00:00:00.000Z',
+    updatedAt: new Date(Date.now() + 1000).toISOString(),
+    deletedAt: null,
+  };
+  M.box.entries.set(tomb.id, revive);
+  await M.engine.onLocalWrite();
+  await pump([L, M], 12, '场景7-复活');
+  ok(L.box.entries.get(tomb.id)?.content === '场景7:又被写回来了', '自愈后,新修改能正常同步(不再被 2099 永久压住)');
+
   console.log(`\n同步合并新增(put 且原本不存在)共 ${putLog.length} 条:`);
   for (const l of putLog) console.log(`   ${l}`);
   console.log(`\n本次 write() 调用共 ${writeLog.length} 次:`);
