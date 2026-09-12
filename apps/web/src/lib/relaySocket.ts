@@ -88,10 +88,11 @@ export class RelaySocket {
   }
 
   /**
-   * 应用层心跳(每 30 秒)。
+   * 应用层心跳(每 15 秒)。
    * 只发一条 ping,不拉数据 —— 目的有两个:
    *   ① 让服务端确认"这个客户端的 JS 真的活着"(网络栈自动回的 pong 不能证明这点);
-   *   ② App 被系统冻结时,JS 停摆 → 服务端 75 秒后断开 → 恢复后客户端重连并立即对账。
+   *   ② App 被系统冻结时,JS 停摆 → 服务端 40 秒后断开(不再虚报在线) →
+   *      恢复后客户端重连并立即对账。
    */
   private startKeepalive(ws: WebSocket): void {
     this.stopKeepalive();
@@ -101,7 +102,7 @@ export class RelaySocket {
       } catch {
         /* 忽略 */
       }
-    }, 30000);
+    }, 15000);
   }
 
   private stopKeepalive(): void {

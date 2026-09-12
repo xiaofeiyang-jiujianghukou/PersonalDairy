@@ -415,7 +415,7 @@ const WS_PING_MS = 30 * 1000;
  * 因此在线/存活必须以"JS 真的在发消息"为准:超过该时长没有应用层心跳就断开连接
  * (客户端恢复后会 onclose → 重连 → 立即对账,数据不会丢)。
  */
-const WS_APP_PING_TIMEOUT_MS = Number(process.env.WS_APP_PING_TIMEOUT_MS ?? 75 * 1000);
+const WS_APP_PING_TIMEOUT_MS = Number(process.env.WS_APP_PING_TIMEOUT_MS ?? 40 * 1000);
 
 function wakeSockets(uid: number, fromDevice: string, toDevice: string): void {
   const m = wsClients.get(uid);
