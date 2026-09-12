@@ -538,6 +538,27 @@ async function main(): Promise<void> {
   ok(devs.leader === N.id, `主端 = 有数据的 N(实际 ${String(devs.leader).slice(0, 10)})`);
   ok(devs.leader !== O.id, '空设备 O 未被选为主端');
 
+  // ================= 场景 9:真机离线时,在线的空探针也不得当主端 =================
+  console.log('\n[场景 9] 有数据的真机全部离线 + 一个在线的空探针 → 主端必须是有数据的那台');
+  const token9 = await freshToken();
+  const P = new Device('devPPPPP-0000-0000-0000-000000000016', token9); // 有数据
+  P.write('场景9:真机的数据', today, '2026-05-01T00:00:00.000Z');
+  await P.engine.onLogin();
+  // 真机"离线":把它的 lastSeen 拨回很久以前(注册表里仍保留数据与水位)
+  const Q = new Device('devQQQQQ-0000-0000-0000-000000000017', token9); // 空探针,后登录
+  await Q.engine.onLogin();
+  await pump([P, Q], 10, '场景9');
+  // 反复刷新 Q 的心跳,让"在线"的是空设备
+  for (let i = 0; i < 3; i++) {
+    await Q.engine.heartbeat();
+    await sleep(200);
+  }
+  const devs9 = (await http<{ leader: string | null }>('/api/relay/devices', { token: token9 })) as {
+    leader: string | null;
+  };
+  ok(devs9.leader === P.id, `主端 = 有数据的真机 P(实际 ${String(devs9.leader).slice(0, 10)})`);
+  ok(devs9.leader !== Q.id, '在线的空探针 Q 未当主端');
+
   console.log(`\n同步合并新增(put 且原本不存在)共 ${putLog.length} 条:`);
   for (const l of putLog) console.log(`   ${l}`);
   console.log(`\n本次 write() 调用共 ${writeLog.length} 次:`);

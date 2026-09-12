@@ -262,7 +262,8 @@ export async function deviceTouch(
  * 主端选举:优先在"确实持有数据"的在线端里选。
  *
  * 候选优先级(逐级回退,避免选出一个空设备当主端——那样其它端向它索取会一无所获):
- *   ① 在线 且 有数据(count>0) ② 在线 ③ 有数据 ④ 全部
+ *   ① 在线 且 有数据(count>0) ② 有数据(离线也算:主端首先是"数据的权威来源",
+ *      在线的空设备毫无价值) ③ 在线 ④ 全部
  * 规则:水位线最新者优先;水位相同取 loginAt 最早者(登录更早=数据更完整);仍相同按 deviceId 稳定排序。
  */
 export function pickLeader(devices: DeviceInfo[]): string | null {
@@ -271,7 +272,13 @@ export function pickLeader(devices: DeviceInfo[]): string | null {
   const online = devices.filter((d) => now - d.lastSeen <= DEVICE_ONLINE_MS);
   const withData = devices.filter((d) => (d.count ?? 0) > 0 && d.watermark);
   const onlineWithData = online.filter((d) => (d.count ?? 0) > 0 && d.watermark);
-  const pool = onlineWithData.length ? onlineWithData : online.length ? online : withData.length ? withData : devices;
+  const pool = onlineWithData.length
+    ? onlineWithData
+    : withData.length
+      ? withData // 有数据 > 在线:关掉的真机仍比一个在线的空探针更该当主端
+      : online.length
+        ? online
+        : devices;
   const sorted = [...pool].sort((a, b) => {
     if (a.watermark !== b.watermark) return a.watermark < b.watermark ? 1 : -1; // 水位新 → 前
     if (a.loginAt !== b.loginAt) return a.loginAt - b.loginAt; // 登录早 → 前
