@@ -2,8 +2,6 @@ import { getSyncEngine, getSyncKey, getSyncPartner, isPhoneMode, syncNow, relayP
 
 let syncing = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
-let loopTimer: ReturnType<typeof setInterval> | null = null;
-let reconcileTimer: ReturnType<typeof setInterval> | null = null;
 let loopAborted = false;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -70,32 +68,54 @@ export function scheduleSync(delay = 800): void {
 }
 
 /**
- * 在线常驻同步:
- *   主线 = 长轮询等"有没有新消息"(服务端挂起,毫秒级唤醒)→ 有则拉取并处理;
- *   定时 = 每 reconcileMs 做一次完整对账(hello 交换水位 + 按需补传),兜住
- *          "长轮询丢事件""多端同时上线时的注册竞态"等情况;
- *   兜底 = 每 intervalMs 强拉一次。
+ * 在线常驻同步(**纯事件驱动,无定时轮询**)。
+ *
+ *   ① 长轮询常驻:POST /api/relay/wait 由服务端挂起,一有新消息(含对端的
+ *      notify / need / 数据 / "有端加入"广播)立刻唤醒 → 拉取并处理。这是"事件",
+ *      不是轮询:没有新消息时服务端不返回、客户端不发请求。
+ *   ② 对账(不是定时,而是事件触发):
+ *      - 登录/冷启动(App.tsx 调 autoSync)
+ *      - App 从后台回到前台(visibilitychange → visible)
+ *      - 网络恢复(online 事件)
+ *      - 多端同时上线的竞态:由服务端在 hello 时广播"有端加入"解决(见 index.ts),
+ *        老端收到即比对索取 —— 所以不需要周期性 hello。
+ *   ③ 写入时:scheduleSync 去抖后 notify + 广播增量 + 拉一次。
+ *
+ * 为什么②里要有"回前台/网络恢复":长轮询连接在系统休眠、切网时可能被静默掐断,
+ * 那台端不会再收到唤醒。用这两个**真实事件**补一次对账,即可回到一致状态。
  */
-export function startRelayLoop(intervalMs = 60000, reconcileMs = 45000): void {
+export function startRelayLoop(): void {
   stopRelayLoop();
   loopAborted = false;
   void relayWaitLoop();
-  loopTimer = setInterval(() => {
-    if (!isPhoneMode() || !getSyncKey() || syncing) return;
-    void relayPullOnly().catch(() => {});
-  }, intervalMs);
-  reconcileTimer = setInterval(() => {
-    if (!isPhoneMode() || !getSyncKey() || syncing) return;
-    syncing = true;
-    void doSync()
-      .catch(() => {})
-      .finally(() => {
-        syncing = false;
-      });
-  }, reconcileMs);
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibility);
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('online', onOnline);
+  }
 }
 
-/** 长轮询主线:等被唤醒 → 拉数并处理控制消息;超时 → 继续等;出错 → 退避重试。 */
+/** 事件触发的一次完整对账(握手交换水位 → 按需补传 → 拉净)。 */
+export function reconcileNow(): void {
+  if (!isPhoneMode() || !getSyncKey() || syncing) return;
+  syncing = true;
+  void doSync()
+    .catch(() => {})
+    .finally(() => {
+      syncing = false;
+    });
+}
+
+function onVisibility(): void {
+  if (document.visibilityState === 'visible') reconcileNow(); // 回到前台
+}
+
+function onOnline(): void {
+  reconcileNow(); // 网络恢复
+}
+
+/** 长轮询主线:等被唤醒 → 拉数并处理控制消息;超时 → 立刻重新挂上;出错 → 退避重连。 */
 async function relayWaitLoop(): Promise<void> {
   while (!loopAborted) {
     if (!isPhoneMode() || !getSyncKey() || syncing) {
@@ -108,19 +128,13 @@ async function relayWaitLoop(): Promise<void> {
       if (!handled) continue;
     } catch {
       if (loopAborted) return;
-      await sleep(3000); // 出错退避,别空转
+      await sleep(3000); // 连接出错 → 退避重连(重连后靠上面的对账补齐)
     }
   }
 }
 
 export function stopRelayLoop(): void {
   loopAborted = true;
-  if (loopTimer) {
-    clearInterval(loopTimer);
-    loopTimer = null;
-  }
-  if (reconcileTimer) {
-    clearInterval(reconcileTimer);
-    reconcileTimer = null;
-  }
+  if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility);
+  if (typeof window !== 'undefined') window.removeEventListener('online', onOnline);
 }

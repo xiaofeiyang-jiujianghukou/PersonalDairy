@@ -378,17 +378,33 @@ export class SyncEngine {
 
   private async handle(m: SyncMessage): Promise<number> {
     if (m.kind === 'notify') {
-      // 对端说"我更新到 xxxa":只要它更新的那批是我没有的,就定向索取
-      const info = await this.safeDecrypt<{ watermark?: string; vector?: WatermarkVector }>(m.payload).catch(() => null);
-      const their = String(info?.watermark ?? '');
+      // 对端说"我更新到 xxxa"(或"我上线了"):按**来源**逐条比对我的水位向量,
+      // 只要它有的我没有(或比我新)就定向索取该来源的区间;条目数更多则额外要一次全量。
+      const info = await this.safeDecrypt<{
+        watermark?: string;
+        vector?: WatermarkVector;
+        count?: number;
+      }>(m.payload);
       const mine = await this.watermarkVector();
-      const origin = info?.vector ? Object.keys(info.vector)[0] ?? m.from : m.from;
-      const theirOrigin = String(info?.vector?.[origin] ?? their);
-      const myOrigin = mine[origin] ?? '';
-      if (theirOrigin && theirOrigin > myOrigin) {
-        await this.requestRange(m.from, origin, myOrigin, theirOrigin);
-      } else if (their && their > (mine[m.from] ?? '')) {
-        await this.requestRange(m.from, m.from, mine[m.from] ?? '', their);
+      const theirVector = info?.vector ?? {};
+      let asked = 0;
+      for (const [origin, their] of Object.entries(theirVector)) {
+        if (!their) continue;
+        const my = mine[origin] ?? '';
+        if (their > my) {
+          await this.requestRange(m.from, origin, my, their);
+          asked++;
+        }
+      }
+      // 旧对端不带向量(老版本):退化为按自身水位比较
+      if (!asked && !Object.keys(theirVector).length && info?.watermark) {
+        const their = String(info.watermark);
+        const my = mine[m.from] ?? '';
+        if (their > my) await this.requestRange(m.from, m.from, my, their);
+      }
+      // 数量兜底:对方条目更多 → 说明水位向量看不见缺口,直接要一次全量
+      if ((info?.count ?? 0) > (await this.count())) {
+        await this.requestRange(m.from, '', '', '');
       }
       return 0;
     }

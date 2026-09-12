@@ -189,22 +189,16 @@ class Device {
 }
 
 /**
- * 让若干设备轮流"收消息",其间穿插两次完整同步(runOnce:握手→按需索取区间→拉净→广播水位),
- * 模拟真实 App 的"实时收 + 定时对账"。多端同时上线存在注册竞态,定时对账是收敛的保证。
+ * 让若干设备轮流"收消息"并处理(**纯事件驱动:不做任何定时对账**)。
+ * 收敛依赖真实事件:hello 时服务端广播"有端加入"、写入时的 notify、以及 need/serve 往返。
+ * 若这里只靠 drain 就能收敛,说明不依赖周期性轮询。
  */
-async function pump(devs: Device[], rounds = 8, label = ''): Promise<void> {
+async function pump(devs: Device[], rounds = 14, label = ''): Promise<void> {
   for (let i = 0; i < rounds; i++) {
     for (const d of devs) await d.engine.drain();
     await sleep(60);
   }
-  for (let pass = 0; pass < 2; pass++) {
-    for (const d of devs) await d.engine.runOnce(); // 完整同步(含 hello 对账)
-    for (let i = 0; i < 4; i++) {
-      for (const d of devs) await d.engine.drain();
-      await sleep(70);
-    }
-  }
-  if (label) console.log(`      (${label} 收敛轮询结束)`);
+  if (label) console.log(`      (${label} 事件驱动收敛结束,未使用定时对账)`);
 }
 
 // ---------------- 启动测试服务 ----------------

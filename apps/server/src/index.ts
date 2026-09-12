@@ -476,6 +476,19 @@ app.post('/api/relay/hello', async (req, reply) => {
   };
   if (typeof from !== 'string' || !from) return reply.code(400).send({ error: '缺少 from' });
   const devices = await deviceRegister(user.id, from, String(watermark ?? ''), true, vector ?? {}, Number(count) || 0);
+  // 事件驱动:有新端(或久未出现的端)上线 → 向其它端广播一条"有端加入",带上它的水位/向量/条目数。
+  // 其它端收到就立刻比对、索取缺口 → 多端同时上线的"注册竞态"不靠定时器也能收敛。
+  const self = devices.find((d) => d.deviceId === from);
+  const others = devices.filter(
+    (d) => d.deviceId !== from && Date.now() - d.lastSeen <= ONLINE_MS,
+  );
+  if (self && others.length) {
+    const info = JSON.stringify({
+      plain: { watermark: self.watermark, vector: self.vector, count: self.count },
+    });
+    await relayPush(user.id, from, info, 'notify', '');
+    wakeRelayWaiters(user.id, from, '');
+  }
   return withLeader(devices);
 });
 
