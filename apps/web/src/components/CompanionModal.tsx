@@ -29,7 +29,7 @@ const GREETINGS: Record<CompanionMode, { role: 'assistant'; content: string }> =
 const META: Record<CompanionMode, { title: string; hint: string; chatKey: string }> = {
   companion: {
     title: 'AI 陪伴',
-    hint: '我读过你最近写下的日记,能陪你聊聊、安抚心情。仅依据你的文字回应,不评判、不说教。',
+    hint: '长期陪你聊的那位:对话会一直留着(关掉再打开还在),也会同步到你的其它设备。仅依据你的文字回应,不评判、不说教。',
     chatKey: 'diary.chat.companion',
   },
   mentor: {

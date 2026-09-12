@@ -991,7 +991,8 @@ app.post('/api/companion', async (req, reply) => {
   }
   const context = Array.isArray(body?.context) ? (body.context as Entry[]) : [];
   const provider = getTextProvider();
-  const mode: CompanionMode = body?.mode === 'mentor' ? 'mentor' : 'companion';
+  const mode: CompanionMode =
+    body?.mode === 'mentor-report' ? 'mentor-report' : body?.mode === 'mentor' ? 'mentor' : 'companion';
   const text = await chatWithDiary(context, messages as CompanionMessage[], provider, mode);
   const result = { reply: text, model: config.ai.textModel };
   return encrypted ? { enc: await encryptObject(key, result) } : result;

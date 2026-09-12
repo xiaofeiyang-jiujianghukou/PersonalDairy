@@ -1,7 +1,10 @@
 import type { ChatMessage } from '@diary/shared/syncEngine';
 
 /**
- * AI 对话的本地库(陪伴 / 心理导师)。
+ * AI 对话的本地库。
+ *   · companion       —— AI 陪伴(长期聊天,持续累积)
+ *   · mentor-report   —— AI 心理导师的历次"一次性观察报告"
+ * 两者都经同一条加密链路多端同步。
  *
  * 与日记同一套原则:内容只存在终端,经同一条加密信箱链路在多端之间同步。
  * 每条消息生成后不再修改 → 带上稳定 id 与时间戳,合并时按 id 去重即可,不存在冲突。
@@ -62,7 +65,7 @@ export function clearThread(thread: string): void {
 }
 
 /** 已知的对话线程(UI 里用到的两个)。 */
-export const CHAT_THREADS = ['companion', 'mentor'] as const;
+export const CHAT_THREADS = ['companion', 'mentor', 'mentor-report'] as const;
 
 /** 同步引擎用:本机全部对话消息。 */
 export function chatAll(): ChatMessage[] {

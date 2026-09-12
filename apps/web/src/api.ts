@@ -331,7 +331,7 @@ export const companionApi = {
   chat: (
     messages: CompanionMessage[],
     context: Entry[],
-    mode: 'companion' | 'mentor' = 'companion',
+    mode: 'companion' | 'mentor' | 'mentor-report' = 'companion',
   ): Promise<{ reply: string; model: string }> => {
     // 已配置云端(base)时,本地优先也直接走云端(内容只在 AI 处理时短暂经过,不落盘)
     if (getApiBase()) {
