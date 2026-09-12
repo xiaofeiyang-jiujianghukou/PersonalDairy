@@ -239,14 +239,19 @@ async function main(): Promise<void> {
   clearInterval(hb);
   ok(E.ws.readyState === WebSocket.OPEN, '持续发心跳的连接保持在线');
 
-  // ---------- 断线后长轮询兜底 ----------
+  // ---------- 断线后长轮询/信箱兜底 ----------
+  // WS 只是唤醒通道;真正取件走 HTTP 信箱。WS 断开后,件依然能取到(兜底有效)。
+  await req('/api/relay/push', { body: { from: 'dev-WS-A', to: 'dev-WS-B', payload: 'm1', kind: 'data' }, token });
+  await sleep(300);
   B.ws.close();
   await sleep(300);
-  const before = await req<{ messages: unknown[] }>(
-    `/api/relay/pull?from=dev-WS-B&after=0&limit=50`,
+  const mbox = await req<{ messages: Array<{ payload?: string }> }>(
+    `/api/relay/mbox?from=dev-WS-B&limit=50`,
     { token },
   );
-  ok((before.data.messages ?? []).length > 0, 'WS 断开后,长轮询仍能拉到消息(兜底通道有效)');
+  ok((mbox.data.messages ?? []).length > 0, 'WS 断开后,信箱仍能取到件(兜底通道有效)');
+  const drained = await req<{ messages: unknown[] }>(`/api/relay/mbox?from=dev-WS-B&limit=50`, { token });
+  ok((drained.data.messages ?? []).length === 0, '取走即删:再取一次已为空(服务端不留存)');
 
   A.ws.close();
   C.ws.close();
