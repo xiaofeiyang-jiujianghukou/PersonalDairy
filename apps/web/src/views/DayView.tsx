@@ -6,6 +6,12 @@ import { useDataRefresh } from '../lib/useDataRefresh';
 import Composer from '../components/Composer';
 import EntryItem from '../components/EntryItem';
 
+
+/** 一天的条目按**倒序**展示(最新写的在最上面),与「今天」页保持一致。 */
+function newestFirst(list: Entry[]): Entry[] {
+  return list.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+}
+
 export default function DayView({
   date,
   onBack,
@@ -27,7 +33,7 @@ export default function DayView({
     void (async () => {
       try {
         const list = await api.listByDate(current);
-        if (alive) setEntries(list);
+        if (alive) setEntries(newestFirst(list));
       } catch (e) {
         alert((e as Error).message);
       } finally {
@@ -41,8 +47,8 @@ export default function DayView({
 
   async function reload() {
     try {
-      // 从日历点进来的日期:**保持正序**(按时间先后回顾一整天),不做倒序
-      setEntries(await api.listByDate(current));
+      // 日历点进来的日期同样**倒序**:最新写的在最上面(与「今天」页一致)
+      setEntries(newestFirst(await api.listByDate(current)));
     } catch (e) {
       alert((e as Error).message);
     }
