@@ -223,6 +223,45 @@ async function http<T>(url: string, init?: RequestInit, timeoutMs?: number): Pro
  * 每一次取件都是这个错,导致电脑端再也收不到任何东西。
  * 服务端已允许跨域,所以这几条路径直接用原生 fetch 更稳。
  */
+
+/**
+ * 用 XMLHttpRequest 发请求 —— 真正绕开 Tauri 的 HTTP 插件。
+ *
+ * 关键事实:Tauri v2 会把 window.fetch 整个替换成它自己的实现,所以写 globalThis.fetch
+ * 拿到的**仍然是插件**;只有 XHR 没被替换。实测:收件(响应里带对端推来的数据)时插件会抛
+ * "Cannot read properties of undefined (reading 'id')",换成 XHR 才能彻底走开这条路。
+ */
+function httpXhr<T>(url: string, timeoutMs = 25_000): Promise<T> {
+  return new Promise<T>((resolvePromise, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', resolve(url), true);
+    const h = authHeaders();
+    for (const k of Object.keys(h)) xhr.setRequestHeader(k, h[k]!);
+    xhr.timeout = timeoutMs;
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolvePromise(JSON.parse(xhr.responseText) as T);
+        } catch (e) {
+          reject(new Error(`响应解析失败:${(e as Error).message}`));
+        }
+        return;
+      }
+      let msg = `请求失败 (${xhr.status})`;
+      try {
+        const b = JSON.parse(xhr.responseText) as { error?: string; message?: string };
+        msg = b.message ?? b.error ?? msg;
+      } catch {
+        /* 用默认信息 */
+      }
+      reject(new Error(msg));
+    };
+    xhr.onerror = () => reject(new Error('网络错误'));
+    xhr.ontimeout = () => reject(new Error('请求超时'));
+    xhr.send();
+  });
+}
+
 async function httpDirect<T>(url: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
   const res = await fetchWithTimeout(resolve(url), init, timeoutMs, true);
   if (!res.ok) {
@@ -586,8 +625,9 @@ function makeEngineTransport(deviceId: string): SyncTransport {
       });
     },
     // 取走自己的信箱(取走即消费,无游标)
+    // 收件走 XHR:响应里可能带对端推来的数据,而 Tauri 的 fetch 插件在这里会崩(实测)
     drainMailbox: (p) =>
-      httpDirect<{ messages: []; remaining?: number }>(
+      httpXhr<{ messages: []; remaining?: number }>(
         `/api/relay/mbox?from=${encodeURIComponent(deviceId)}&limit=${p.limit}`,
       ),
     wait: (p) =>

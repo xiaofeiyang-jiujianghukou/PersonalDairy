@@ -602,7 +602,17 @@ export class SyncEngine {
       try {
         page = await this.o.transport.drainMailbox({ deviceId: this.o.deviceId, limit: pageSize });
       } catch (e) {
+        // 把"被抛出来的到底是什么"完整记下来 —— 之前只记 message,看不出是哪一层抛的
+        const raw = (() => {
+          try {
+            return JSON.stringify(e);
+          } catch {
+            return String(e);
+          }
+        })();
+        const keys = e && typeof e === 'object' ? Object.keys(e as object).join(',') : typeof e;
         this.fail('取件 drainMailbox', e);
+        this.log(`  ↳ 抛出物类型: ${typeof e} | 字段: [${keys}] | 原始值: ${raw?.slice(0, 300)}`);
         break;
       }
       const msgs = page.messages ?? [];
