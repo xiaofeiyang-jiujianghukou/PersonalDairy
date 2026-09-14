@@ -1477,3 +1477,66 @@ a {
 .video-external-title { font-size: 14px; font-weight: 600; }
 
 .video-external-sub { font-size: 12px; opacity: 0.82; }
+
+/* 桌面端 canvas 播放器:绕开 WebKit 视频层渲染问题,自己画帧 */
+.canvas-video {
+  position: relative;
+  width: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #000;
+  cursor: pointer;
+  line-height: 0;
+}
+
+.canvas-video-canvas {
+  width: 100%;
+  height: auto;
+  max-height: 62vh;
+  object-fit: contain;
+}
+
+.canvas-video-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  padding-left: 4px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  color: #111;
+  font-size: 18px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.canvas-video-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.canvas-video-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.22);
+  line-height: 0;
+}
+
+.canvas-video-bar-fill {
+  height: 100%;
+  background: #07c160;
+  transition: width 0.1s linear;
+}
