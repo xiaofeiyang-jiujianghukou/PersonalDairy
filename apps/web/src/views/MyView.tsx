@@ -160,6 +160,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
             </div>
           );
         })}
+        {username && (
         <button
         className="mine-row as-div"
         onClick={async () => {
@@ -176,6 +177,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
         <span className="mine-row-label">清理失效终端</span>
         <span className="mine-row-desc">移除无数据且长期离线的记录</span>
         </button>
+        )}
     </div>
   );
   return (

@@ -239,6 +239,14 @@ function getLocalBackend(): LocalBackend {
 }
 const localApi = createLocalApi(getLocalBackend());
 
+/*
+ * 本地模式(手机上未登录 / 纯本机使用)没有服务端注册表,清理动作是空操作。
+ * 之前这里缺了这个方法,点到"清理失效终端"会报
+ * "an.forgetStaleTerminals is not a function" —— 实测问题。
+ */
+(localApi as unknown as { forgetStaleTerminals: (keep: string) => Promise<number> }).forgetStaleTerminals =
+  async () => 0;
+
 /** 读取本机(本地优先)的全部日记,供 AI 陪伴/小结等组件直接取用。 */
 export function getAllLocalEntries(): Promise<Entry[]> {
   return getLocalBackend().getAll();
