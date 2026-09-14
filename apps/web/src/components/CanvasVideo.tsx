@@ -115,8 +115,16 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
          * (实测:第一次播放正常、第二次播放画面转 90°)。锁住第一次的值即可始终稳定。
          */
         if (!sizeLocked && v.videoWidth && v.videoHeight) {
-          c.width = v.videoWidth;
-          c.height = v.videoHeight;
+          /*
+           * 锁定为**横向**画布(与用户要的"图1"一致):
+           * WebKit 汇报的宽高会中途从"未旋转的 1920×912"变成"旋转后的 912×1920",
+           * 跟着它变画面就会翻来覆去。这里只在第一次测量时定尺寸,并统一取横屏比例
+           * (竖着的测量值转置),之后恒定不变。
+           */
+          const a = Math.max(v.videoWidth, v.videoHeight);
+          const b = Math.min(v.videoWidth, v.videoHeight);
+          c.width = a;
+          c.height = b;
           sizeLocked = true;
           lockRef.current = true;
         }

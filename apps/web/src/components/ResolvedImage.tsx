@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { resolveMediaRef } from '../lib/image';
 import { isTauri } from '../lib/net';
-import VideoCard from './VideoCard';
+import CanvasVideo from './CanvasVideo';
 import ImageViewer from './ImageViewer';
 
 /**
@@ -18,9 +18,9 @@ export default function ResolvedImage({ src, alt }: { src?: string; alt?: string
   const [zoomed, setZoomed] = useState(false);
 
   // 桌面端(WebKitGTK)视频层渲染坏 → 用 canvas 自绘播放;手机上仍是原生 <video>
-  // 桌面端(WebKitGTK 视频渲染有缺陷)→ 带封面帧的卡片,交给系统播放器;
+  // 桌面端(WebKitGTK 视频渲染有缺陷)→ 用 canvas 自绘播放(能直接看到画面);
   // 手机上仍是原生 <video>(那边一直正常)
-  const useSystemPlayer = isVideo && isTauri();
+  const useCanvasPlayer = isVideo && isTauri();
 
   useEffect(() => {
     let alive = true;
@@ -55,7 +55,7 @@ export default function ResolvedImage({ src, alt }: { src?: string; alt?: string
    * 媒体加载器直接报 MEDIA_ERR_SRC_NOT_SUPPORTED / NETWORK_NO_SOURCE(压根没加载)。
    * 图片走 blob 没事,video 的加载路径不一样。所以这里把 blob 转成 data: URL 再喂给它。
    */
-  if (isVideo && useSystemPlayer) return <VideoCard url={url} />;
+  if (isVideo && useCanvasPlayer) return <CanvasVideo blobUrl={url} />;
   return isVideo ? (
     <video className="img video" src={url} controls playsInline />
   ) : (
