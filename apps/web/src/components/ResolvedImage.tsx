@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react';
 import { resolveMediaRef } from '../lib/image';
-import { isTauri } from '../lib/net';
-import CanvasVideo from './CanvasVideo';
 import ImageViewer from './ImageViewer';
 
 /**
@@ -17,8 +15,6 @@ export default function ResolvedImage({ src, alt }: { src?: string; alt?: string
   const isVideo = !!src && src.startsWith('diary-video:');
   const [zoomed, setZoomed] = useState(false);
 
-  // 桌面端(WebKitGTK)视频层渲染坏 → 用 canvas 自绘播放;手机上仍是原生 <video>
-  const useCanvasPlayer = isVideo && isTauri();
 
   useEffect(() => {
     let alive = true;
@@ -48,7 +44,6 @@ export default function ResolvedImage({ src, alt }: { src?: string; alt?: string
 
   if (failed) return <span className="img-broken">{isVideo ? '视频' : '图片'}</span>;
   if (!url) return <span className="img-loading">{isVideo ? '视频…' : '图片…'}</span>;
-  if (isVideo && useCanvasPlayer) return <CanvasVideo src={url} />;
   return isVideo ? (
     <video className="img video" src={url} controls playsInline />
   ) : (
