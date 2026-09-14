@@ -1,8 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 闪光灯关:同样的细线闪电 + 一道斜线(参考微信) -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="26dp" android:height="26dp"
     android:viewportWidth="24" android:viewportHeight="24">
-    <path android:fillColor="#FFFFFFFF" android:pathData="M7,2v11h3v9l7,-12h-4l4,-8z"/>
-    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="1.6"
-        android:pathData="M3.2,3.2 L20.8,20.8"/>
+    <path
+        android:pathData="M12.6,2.2 L5.2,13.1 h5.1 l-1.6,8.7 L18.8,10.9 h-5.4 z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.7"
+        android:strokeLineJoin="round"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M3.4,3.4 L20.6,20.6"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.7"
+        android:strokeLineCap="round" />
 </vector>

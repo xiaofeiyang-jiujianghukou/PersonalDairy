@@ -425,8 +425,8 @@ public class NativeCameraActivity extends AppCompatActivity {
         } catch (Exception ignored) {
         }
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) focusRing.getLayoutParams();
-        lp.leftMargin = Math.round(x - dp(36));
-        lp.topMargin = Math.round(y - dp(36));
+        lp.leftMargin = Math.round(x - dp(39));
+        lp.topMargin = Math.round(y - dp(39));
         focusRing.setLayoutParams(lp);
         focusRing.animate().cancel();
         focusRing.setAlpha(0.9f);
@@ -714,6 +714,41 @@ public class NativeCameraActivity extends AppCompatActivity {
         if (tickRunnable != null) {
             handler.removeCallbacks(tickRunnable);
             tickRunnable = null;
+        }
+    }
+
+    /** 对焦靶标:一个方框 + 四个角的括号(相机通用样式)。 */
+    private class FocusTarget extends View {
+        private final android.graphics.Paint paint =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        FocusTarget(android.content.Context ctx) {
+            super(ctx);
+            paint.setStyle(android.graphics.Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(2));
+            paint.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+            paint.setColor(Color.WHITE);
+        }
+
+        @Override
+        protected void onDraw(android.graphics.Canvas canvas) {
+            super.onDraw(canvas);
+            float w = getWidth();
+            float h = getHeight();
+            float len = dp(18); // 每段括号的长度
+            float m = dp(2);    // 离边缘的间距
+            // 左上
+            canvas.drawLine(m, m, m + len, m, paint);
+            canvas.drawLine(m, m, m, m + len, paint);
+            // 右上
+            canvas.drawLine(w - m, m, w - m - len, m, paint);
+            canvas.drawLine(w - m, m, w - m, m + len, paint);
+            // 左下
+            canvas.drawLine(m, h - m, m + len, h - m, paint);
+            canvas.drawLine(m, h - m, m, h - m - len, paint);
+            // 右下
+            canvas.drawLine(w - m, h - m, w - m - len, h - m, paint);
+            canvas.drawLine(w - m, h - m, w - m, h - m - len, paint);
         }
     }
 
