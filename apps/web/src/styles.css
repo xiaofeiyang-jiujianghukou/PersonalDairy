@@ -1418,32 +1418,62 @@ a {
   background: rgba(7, 193, 96, 0.12);
 }
 
-/* 桌面端视频卡片:交给系统播放器(绕开 WebKit 的视频花屏问题) */
+
+/* 桌面端视频卡片:封面帧 + 居中播放按钮(和手机端观感一致) */
 .video-external {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
-  padding: 26px 16px;
-  border: 1px solid var(--line);
+  min-height: 180px;
+  padding: 18px;
+  border: 0;
   border-radius: 12px;
-  background: rgba(0, 0, 0, 0.03);
-  color: var(--text);
-  font-size: 14px;
+  background-color: #111;
+  background-size: cover;
+  background-position: center;
+  color: #fff;
   cursor: pointer;
+  overflow: hidden;
 }
 
-.video-external:disabled { opacity: 0.6; cursor: default; }
+.video-external.has-poster::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.05) 40%, rgba(0, 0, 0, 0.55) 100%);
+}
 
-.video-external-icon {
+.video-external:disabled { opacity: 0.7; cursor: default; }
+
+.video-external-play {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 54px;
+  height: 54px;
+  padding-left: 3px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.72);
-  color: #fff;
-  font-size: 13px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #111;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
 }
+
+.video-external-meta {
+  position: relative;
+  z-index: 1;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+}
+
+.video-external.has-poster .video-external-meta { display: flex; }
+
+.video-external-title { font-size: 14px; font-weight: 600; }
+
+.video-external-sub { font-size: 12px; opacity: 0.82; }
