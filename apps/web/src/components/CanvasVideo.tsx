@@ -33,11 +33,16 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
     let alive = true;
     setFailed(false);
     setDiag('');
-    // 换视频时必须重置画布尺寸:否则会沿用上一条视频的宽高,导致方向/比例错乱(实测)
+    /*
+     * 注意:**不要**把画布清零。
+     * 清零会让 canvas 变成 0 高,用户看到的就是垫在下面的原生 <video>;
+     * 而 WebKit 显示竖屏 MP4 时会忽略旋转信息,于是画面横过来(实测就是这个现象)。
+     * 正确做法:保留画布尺寸,等拿到真实宽高后再更新。
+     */
     const c0 = canvasRef.current;
-    if (c0) {
-      c0.width = 0;
-      c0.height = 0;
+    if (c0 && c0.width === 0) {
+      c0.width = 720; // 给一个竖向兜底,避免出现 0 尺寸
+      c0.height = 1280;
     }
     void (async () => {
       try {
@@ -68,6 +73,12 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
     const v = videoRef.current;
     if (!v) return;
     const onLoaded = (): void => {
+      // 立刻按真实宽高设定画布(竖屏视频的 videoWidth/Height 已含旋转信息)
+      const c = canvasRef.current;
+      if (c && v.videoWidth && v.videoHeight) {
+        c.width = v.videoWidth;
+        c.height = v.videoHeight;
+      }
       try {
         v.currentTime = 0.05;
       } catch {
