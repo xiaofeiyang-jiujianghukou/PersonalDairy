@@ -115,17 +115,19 @@ export default function CanvasVideo({ src }: { src: string }) {
         playsInline
         preload="auto"
         /*
-         * 注意:不要用 display:none 藏它 —— WebKit 可能因此停止为"不可见"的元素解码,
-         * 结果 canvas 拿不到帧(实测踩过)。改成 1px 透明放在左下角,肉眼看不到但仍在解码。
+         * 藏 video 的坑(实测两次):
+         *   · display:none → WebKit 不解码,canvas 没帧可画;
+         *   · 1px / opacity≈0 → 同样不解码。
+         * 所以让它**以正常尺寸待在 canvas 正下方**:对 WebKit 来说是"正常可见、正常解码",
+         * 而用户看到的是上面那层 canvas(画面正确)。真正被藏起来的只是"坏掉的视频层"。
          */
         style={{
           position: 'absolute',
-          left: 0,
-          bottom: 0,
-          width: 1,
-          height: 1,
-          opacity: 0.01,
-          pointerEvents: 'none',
+          inset: 0,
+          width: '100%',
+          height: '100%',
+          objectFit: 'contain',
+          zIndex: 0,
         }}
         onError={() => setFailed(true)}
         onPlay={() => setPlaying(true)}

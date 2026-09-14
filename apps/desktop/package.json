@@ -1,6 +1,6 @@
 {
   "name": "@diary/desktop",
-  "version": "0.16.27",
+  "version": "0.16.28",
   "private": true,
   "type": "module",
   "scripts": {

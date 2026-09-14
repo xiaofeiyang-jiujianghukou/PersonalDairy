@@ -1490,6 +1490,8 @@ a {
 }
 
 .canvas-video-canvas {
+  position: relative;
+  z-index: 1;          /* 盖在 video 之上:用户看到的是它 */
   width: 100%;
   height: auto;
   max-height: 62vh;
