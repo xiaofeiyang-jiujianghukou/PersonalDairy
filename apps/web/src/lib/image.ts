@@ -94,7 +94,7 @@ export async function resolveVideoRef(ref: string): Promise<string> {
     const id = ref.slice('diary-video:'.length);
     // 同图片:先读本机媒体库(服务端不保存内容,电脑端去要只会 404 → 视频打不开)
     const local = await getImage(id);
-    if (local) return URL.createObjectURL(local);
+    if (local) return URL.createObjectURL(await withGoodType(local, 'video'));
     if (isPhoneMode()) return '';
     const res = await (await getFetch())(`/api/media/${id}`);
     if (!res.ok) return '';
@@ -113,6 +113,32 @@ export async function resolveMediaRef(ref: string): Promise<string> {
  * 把图片引用解析成可显示的 URL(blob/data URL 或原样)。
  * 调用方负责 revoke 返回的 object URL。
  */
+
+/**
+ * 修正媒体 blob 的类型。
+ *
+ * 为什么需要:同步过来的 blob 类型可能缺失或只是 application/octet-stream
+ * (例如手机原生相机返回的 base64 没带 MIME)。安卓 Chrome 会嗅探内容照常播放,
+ * 但桌面 WebKitGTK 严格按类型判断 —— 于是"手机能播、电脑播不了"。
+ * 这里按文件头把类型补正,拿不准时就按调用方给的兜底类型。
+ */
+async function withGoodType(blob: Blob, fallback: 'image' | 'video'): Promise<Blob> {
+  const cur = (blob.type || '').toLowerCase();
+  const healthy = fallback === 'video' ? cur.startsWith('video/') : cur.startsWith('image/');
+  const head = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+  const ascii = (o: number, n: number): string =>
+    String.fromCharCode(...Array.from(head.slice(o, o + n))).replace(/[^\x20-\x7e]/g, '');
+  let sniffed = '';
+  if (ascii(4, 4) === 'ftyp') sniffed = 'video/mp4';
+  else if (head[0] === 0xff && head[1] === 0xd8) sniffed = 'image/jpeg';
+  else if (head[0] === 0x89 && ascii(1, 3) === 'PNG') sniffed = 'image/png';
+  else if (ascii(0, 3) === 'GIF') sniffed = 'image/gif';
+  else if (ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP') sniffed = 'image/webp';
+  const want = sniffed || (healthy ? '' : fallback === 'video' ? 'video/mp4' : 'image/jpeg');
+  if (!want || want === cur) return blob;
+  return blob.slice(0, blob.size, want);
+}
+
 export async function resolveImageRef(ref: string): Promise<string> {
   if (ref.startsWith('diary-img:')) {
     const id = ref.slice('diary-img:'.length);
@@ -124,7 +150,7 @@ export async function resolveImageRef(ref: string): Promise<string> {
      * 只有本机确实没有(旧数据/迁移中)才回落到服务端。
      */
     const local = await getImage(id);
-    if (local) return URL.createObjectURL(local);
+    if (local) return URL.createObjectURL(await withGoodType(local, 'image'));
     if (isPhoneMode()) return '';
     const res = await (await getFetch())(`/api/images/${id}`);
     if (!res.ok) return '';

@@ -1,7 +1,7 @@
 /** 统一 fetch:桌面(Tauri)走原生 HTTP 插件(绕过 webview CORS/大小限制);其它走浏览器 fetch。 */
 let tauriFetch: typeof fetch | null = null;
 
-function isTauri(): boolean {
+export function isTauri(): boolean {
   const w = window as unknown as { __TAURI_INTERNALS__?: unknown };
   return Boolean(w.__TAURI_INTERNALS__);
 }

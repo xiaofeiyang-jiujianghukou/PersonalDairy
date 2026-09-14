@@ -1417,3 +1417,33 @@ a {
   color: #07c160;
   background: rgba(7, 193, 96, 0.12);
 }
+
+/* 桌面端视频卡片:交给系统播放器(绕开 WebKit 的视频花屏问题) */
+.video-external {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 26px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.03);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.video-external:disabled { opacity: 0.6; cursor: default; }
+
+.video-external-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 13px;
+}
