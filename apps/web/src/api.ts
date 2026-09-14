@@ -188,8 +188,14 @@ function reqHeaders(init?: RequestInit): Record<string, string> {
  * await 就永久挂住 → 同步流程的 syncing 标志永远为 true → 之后所有唤醒/拉取都被自己挡掉,
  * 而 WebSocket 心跳仍在发 → App 表现成"在线但什么都不干"。实测事故:手机就是这样卡死的。
  */
-async function fetchWithTimeout(url: string, init?: RequestInit, timeoutMs = 25_000): Promise<Response> {
-  const f = await getFetch();
+async function fetchWithTimeout(
+  url: string,
+  init?: RequestInit,
+  timeoutMs = 25_000,
+  forceNative = false,
+): Promise<Response> {
+  // forceNative:跳过 Tauri 的 HTTP 插件(它在大响应上会崩),直接用浏览器 fetch
+  const f = forceNative ? globalThis.fetch : await getFetch();
   const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
   const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
   try {
@@ -207,6 +213,25 @@ async function http<T>(url: string, init?: RequestInit, timeoutMs?: number): Pro
   }
   return res.json() as Promise<T>;
 }
+
+/**
+ * 用**浏览器原生 fetch**发请求(不走 Tauri 的 HTTP 插件)。
+ *
+ * 为什么需要:桌面端默认走 @tauri-apps/plugin-http(为了绕过 webview 的 CORS),
+ * 但它在响应体较大时会抛 "Cannot read properties of undefined (reading 'id')"
+ * —— 而"取件"的响应恰恰可能很大(对端推来的数据里带图片/视频)。实测日志里
+ * 每一次取件都是这个错,导致电脑端再也收不到任何东西。
+ * 服务端已允许跨域,所以这几条路径直接用原生 fetch 更稳。
+ */
+async function httpDirect<T>(url: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
+  const res = await fetchWithTimeout(resolve(url), init, timeoutMs, true);
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
+    throw new Error(body?.message ?? body?.error ?? `请求失败 (${res.status})`);
+  }
+  return res.json() as Promise<T>;
+}
+
 async function httpFrom<T>(base: string, url: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
   const res = await fetchWithTimeout(`${base || ''}${url}`, init, timeoutMs);
   if (!res.ok) {
@@ -562,7 +587,7 @@ function makeEngineTransport(deviceId: string): SyncTransport {
     },
     // 取走自己的信箱(取走即消费,无游标)
     drainMailbox: (p) =>
-      http<{ messages: []; remaining?: number }>(
+      httpDirect<{ messages: []; remaining?: number }>(
         `/api/relay/mbox?from=${encodeURIComponent(deviceId)}&limit=${p.limit}`,
       ),
     wait: (p) =>
