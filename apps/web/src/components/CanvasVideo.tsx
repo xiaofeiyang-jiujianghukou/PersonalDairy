@@ -131,7 +131,21 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
         const ctx = c.getContext('2d');
         if (ctx && v.readyState >= 2) {
           try {
-            ctx.drawImage(v, 0, 0, c.width, c.height);
+            /*
+             * 画布锁定为横向,而视频当前帧可能是竖向(WebKit 的汇报会在两者间跳)。
+             * 差异时**把帧旋转 90° 再画**,而不是拉伸 —— 否则文字会变成竖的(实测)。
+             */
+            const framePortrait = v.videoWidth < v.videoHeight;
+            const canvasLandscape = c.width > c.height;
+            if (framePortrait && canvasLandscape) {
+              ctx.save();
+              ctx.translate(c.width / 2, c.height / 2);
+              ctx.rotate(Math.PI / 2);
+              ctx.drawImage(v, -c.height / 2, -c.width / 2, c.height, c.width);
+              ctx.restore();
+            } else {
+              ctx.drawImage(v, 0, 0, c.width, c.height);
+            }
           } catch {
             /* 偶尔取不到帧就跳过这一帧 */
           }
