@@ -125,6 +125,24 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
         } catch {
           orientRef.current = null;
         }
+        /*
+         * 关键:拿到文件里的权威方向后,**立刻**给画布定尺寸并涂黑。
+         *
+         * 之前画布在"视频数据还没到"的这段时间是 0 尺寸的 —— 那段时间露出来的是下面
+         * 那层原生 <video>,而 WebKit 对带旋转标记的视频时对时错,于是表现为"随机翻转"。
+         * 画布一早就有尺寸且不透明,原生层就再也没有露脸的机会了。
+         */
+        const c1 = canvasRef.current;
+        const o1 = orientRef.current;
+        if (c1 && o1) {
+          c1.width = o1.swapped ? o1.h : o1.w;
+          c1.height = o1.swapped ? o1.w : o1.h;
+          const g = c1.getContext('2d');
+          if (g) {
+            g.fillStyle = '#000';
+            g.fillRect(0, 0, c1.width, c1.height);
+          }
+        }
         setSrc(dataUrl);
         setDiag(`data URL ${(dataUrl.length / 1024 / 1024).toFixed(1)}MB`);
       } catch (e) {
@@ -178,7 +196,7 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
          * 原始值(1920×912),随后才修正为 912×1920。跟着它变,画面就会从"正"变成"转过去"
          * (实测:第一次播放正常、第二次播放画面转 90°)。锁住第一次的值即可始终稳定。
          */
-        if (!sizeLocked && orientRef.current && v.readyState >= 2) {
+        if (!sizeLocked && orientRef.current && c.width > 0) {
           /*
            * 画布尺寸**只依据文件里的旋转标记**(权威、固定),完全不看 WebKit 的汇报
            * —— 后者会随机地在"未旋转值/旋转值"之间跳,跟着它就会随机翻转(实测)。
