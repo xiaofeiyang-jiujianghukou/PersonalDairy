@@ -8,7 +8,8 @@ import { useEffect, useRef, useState } from 'react';
  * 也就是说坏的只是"视频层合成到屏幕"这一步,那就自己把帧画出来,绕开它。
  * 声音仍由隐藏的 <video> 输出(音频走的是另一条管线,不受影响)。
  */
-export default function CanvasVideo({ src }: { src: string }) {
+export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
+  const [src, setSrc] = useState('');
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -21,6 +22,40 @@ export default function CanvasVideo({ src }: { src: string }) {
    */
   const [diag, setDiag] = useState('');
   const [full, setFull] = useState(false); // 铺满屏幕(同一个 canvas 放大,不重载)
+
+  /*
+   * 关键修复:把 blob: URL 转成 data: URL。
+   * Tauri 的页面源是 tauri://localhost,媒体加载器无法加载该源下的 blob: ——
+   * 实测症状:错误码 4(SRC_NOT_SUPPORTED) + networkState=3(NO_SOURCE),即"没有可用来源"。
+   * 图片用 blob 正常,只有 <video> 是这样。
+   */
+  useEffect(() => {
+    let alive = true;
+    setFailed(false);
+    setDiag('');
+    void (async () => {
+      try {
+        const blob = await (await fetch(blobUrl)).blob();
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(String(fr.result));
+          fr.onerror = () => reject(new Error('读取视频数据失败'));
+          fr.readAsDataURL(blob);
+        });
+        if (!alive) return;
+        setSrc(dataUrl);
+        setDiag(`data URL ${(dataUrl.length / 1024 / 1024).toFixed(1)}MB`);
+      } catch (e) {
+        if (alive) {
+          setDiag(`转换失败:${(e as Error).message}`);
+          setFailed(true);
+        }
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [blobUrl]);
 
   // 打开后先静默预载一帧,让 canvas 立刻有画面(不自动出声)
   useEffect(() => {
@@ -117,7 +152,7 @@ export default function CanvasVideo({ src }: { src: string }) {
       <canvas ref={canvasRef} className="canvas-video-canvas" />
       <video
         ref={videoRef}
-        src={src}
+        src={src || undefined}
         playsInline
         preload="auto"
         /*
