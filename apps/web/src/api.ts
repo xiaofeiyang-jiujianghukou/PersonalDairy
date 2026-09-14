@@ -244,7 +244,7 @@ const localApi = createLocalApi(getLocalBackend());
  * 之前这里缺了这个方法,点到"清理失效终端"会报
  * "an.forgetStaleTerminals is not a function" —— 实测问题。
  */
-(localApi as unknown as { forgetStaleTerminals: (keep: string) => Promise<number> }).forgetStaleTerminals =
+(localApi as unknown as { forgetStaleTerminals: (keep: string, aggressive?: boolean) => Promise<number> }).forgetStaleTerminals =
   async () => 0;
 
 /** 读取本机(本地优先)的全部日记,供 AI 陪伴/小结等组件直接取用。 */
@@ -660,10 +660,10 @@ export async function relaySyncNow(): Promise<{ pushed: number; pulled: number }
  * 只拉取云端消息并合并到本地(不推送)。供"在线常驻"循环调用。
  * 会顺带处理控制消息:对端的"我更新了"→ 按需索取区间;对端的"请补传"→ 推送数据。
  */
-export async function forgetStaleTerminals(keep: string): Promise<number> {
+export async function forgetStaleTerminals(keep: string, aggressive = false): Promise<number> {
   const r = await http<{ count?: number }>('/api/relay/forget', {
     method: 'POST',
-    body: JSON.stringify({ keep: [keep] }),
+    body: JSON.stringify({ keep: [keep], aggressive }),
   });
   return Number(r.count ?? 0);
 }

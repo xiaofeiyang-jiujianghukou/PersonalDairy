@@ -596,16 +596,18 @@ app.post('/api/relay/wait', async (req) => {
 // 排查/自检留下的临时设备号会长期挂在注册表里,既干扰"我的终端"列表,也会参与选举。
 app.post('/api/relay/forget', async (req) => {
   const user = (req as AuthedRequest).user!;
-  const { keep } = (req.body ?? {}) as { keep?: string[] };
+  const { keep, aggressive } = (req.body ?? {}) as { keep?: string[]; aggressive?: boolean };
   const keepSet = new Set((keep ?? []).map(String));
   const now = Date.now();
   const devices = await deviceList(user.id);
   const removed: string[] = [];
   for (const d of devices) {
-    // 保留:调用方指定的设备号(通常是本机)、有数据的设备、以及最近 7 天出现过的设备
+    // 保留:调用方指定的设备号(通常是本机)、有数据的设备、以及 24 小时内出现过的设备
     if (keepSet.has(d.deviceId)) continue;
     if (d.count > 0 || d.watermark) continue;
-    if (now - d.lastSeen < 7 * 24 * 3600 * 1000) continue;
+    // 普通模式:24 小时没出现才清;强力模式:只要离线且无数据就清
+    const offline = now - d.lastSeen > 90 * 1000;
+    if (!aggressive && now - d.lastSeen < 24 * 3600 * 1000) continue;
     await deviceForget(user.id, d.deviceId);
     removed.push(d.deviceId);
   }

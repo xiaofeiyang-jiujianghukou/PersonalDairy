@@ -166,7 +166,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
         onClick={async () => {
           if (!window.confirm('清理无数据且长期离线的终端记录?(不会删除任何日记)')) return;
           try {
-            const r = await api.forgetStaleTerminals(getDeviceId());
+            const r = await api.forgetStaleTerminals(getDeviceId(), true);
             setNotice(r > 0 ? `已清理 ${r} 条失效终端记录` : '没有需要清理的记录');
             setPeers(await relayDevices());
           } catch (e) {
