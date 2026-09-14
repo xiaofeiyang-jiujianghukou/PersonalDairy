@@ -494,8 +494,15 @@ export class SyncEngine {
    * 就向该端请求 (我有, 他有] 区间。主端优先处理。
    */
   private async reconcileWith(devices: PeerDevice[], mine: WatermarkVector): Promise<number> {
+    /*
+     * 只跟**此刻在线**的对端对账。
+     * 离线的端根本没法应答(手机在后台会被系统冻结、桌面端可能已退出),向它索取只会白等,
+     * 最后还弹出"同步成功 0 条数据"这种误导提示 —— 实测问题(设备表里残留的探针设备尤其明显)。
+     * 离线端的内容会在它上线时通过 notify/hello 主动送过来,不需要我去问它。
+     */
     const peers = devices
       .filter((d) => d.deviceId !== this.o.deviceId)
+      .filter((d) => d.online !== false)
       .sort((a, b) => {
         const al = a.deviceId === this.leader ? 1 : 0;
         const bl = b.deviceId === this.leader ? 1 : 0;

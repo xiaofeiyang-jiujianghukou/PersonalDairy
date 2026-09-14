@@ -183,7 +183,15 @@ const mboxKey = (uid: number, deviceId: string) => `trans:${uid}:mbox:${deviceId
 export async function mboxPush(uid: number, deviceId: string, payload: string): Promise<boolean> {
   if (!deviceId) return false;
   const info = (await deviceList(uid)).find((d) => d.deviceId === deviceId);
-  if (!info || Date.now() - info.lastSeen > DEVICE_ONLINE_MS) return false; // 离线:不存
+  if (!info) return false; // 没注册过的设备不投
+  /*
+   * 离线的端**也投** —— 投进它自己的信箱,等它回来取走(取走即删,TTL 兜底)。
+   *
+   * 为什么必须投:一台设备关机/退出的这段时间里,别的端写的东西只有两条路能到它手里 ——
+   *   ① 它回来时向对端索取,但对端可能正在后台被系统冻结(手机),索取会落空;
+   *   ② 服务端替它暂存这几封信,它一回来就取走。
+   * 只有 ② 是可靠的。这不违反"服务端不承担存储":信件是加密的、取走即删、且有 TTL 上限。
+   */
   const r = c();
   const k = mboxKey(uid, deviceId);
   await r.rpush(k, payload);

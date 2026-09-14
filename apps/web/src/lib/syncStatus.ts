@@ -34,6 +34,14 @@ export function emitSyncStatus(s: SyncStatus): void {
 
 /** 引擎事件 → 界面状态。 */
 export function handleEngineSyncEvent(e: { phase: 'start' | 'done'; merged?: number }): void {
-  if (e.phase === 'start') emitSyncStatus({ kind: 'syncing' });
-  else emitSyncStatus({ kind: 'done', merged: e.merged ?? 0 });
+  if (e.phase === 'start') {
+    emitSyncStatus({ kind: 'syncing' });
+    return;
+  }
+  // 一条都没同步到 → 不弹"同步成功 0 条数据"(那是误导,而且很吵)
+  if ((e.merged ?? 0) <= 0) {
+    emitSyncStatus({ kind: 'idle' });
+    return;
+  }
+  emitSyncStatus({ kind: 'done', merged: e.merged ?? 0 });
 }
