@@ -233,3 +233,10 @@ export async function mboxLen(uid: number, deviceId: string): Promise<number> {
   const r = c();
   return Number(await r.llen(mboxKey(uid, deviceId))) || 0;
 }
+
+/** 从注册表移除一台终端(用于清理无数据且长期离线的僵尸记录)。 */
+export async function deviceForget(uid: number, deviceId: string): Promise<void> {
+  if (!deviceId) return;
+  const r = c();
+  await r.hdel(regKey(uid), deviceId);
+}

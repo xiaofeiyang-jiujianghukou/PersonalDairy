@@ -223,6 +223,7 @@ const remoteApi = {
   listByMonth: (month: string) => http<Entry[]>(`/api/entries?month=${month}`),
   create: (input: EntryCreateInput) => http<Entry>('/api/entries', { method: 'POST', body: JSON.stringify(input) }),
   update: (id: string, input: EntryUpdateInput) => http<Entry>(`/api/entries/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  forgetStaleTerminals,
   remove: (id: string) => http<{ ok: boolean }>(`/api/entries/${id}`, { method: 'DELETE' }),
   search: (q: string) => http<SearchResult[]>(`/api/search?q=${encodeURIComponent(q)}`),
   summaryRead: (month: string) => http<SummaryReadResult>(`/api/summary?month=${month}`),
@@ -651,6 +652,14 @@ export async function relaySyncNow(): Promise<{ pushed: number; pulled: number }
  * 只拉取云端消息并合并到本地(不推送)。供"在线常驻"循环调用。
  * 会顺带处理控制消息:对端的"我更新了"→ 按需索取区间;对端的"请补传"→ 推送数据。
  */
+export async function forgetStaleTerminals(keep: string): Promise<number> {
+  const r = await http<{ count?: number }>('/api/relay/forget', {
+    method: 'POST',
+    body: JSON.stringify({ keep: [keep] }),
+  });
+  return Number(r.count ?? 0);
+}
+
 export async function relayDevices(): Promise<
   Array<{ deviceId: string; online: boolean; count: number; watermark: string }>
 > {

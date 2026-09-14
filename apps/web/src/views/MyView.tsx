@@ -143,6 +143,11 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
         <div className="mine-section">
           <h3 className="mine-section-title">我的终端</h3>
           {peers
+            .filter((d) => {
+              // 隐藏"僵尸终端":没有任何数据、又不在线 —— 多半是排查/自检留下的临时设备号
+              const isSelf = d.deviceId === getDeviceId();
+              return isSelf || d.online || d.count > 0 || Boolean(d.watermark);
+            })
             .slice()
             .sort((a, b) => Number(b.online) - Number(a.online) || a.deviceId.localeCompare(b.deviceId))
             .map((d) => {
@@ -160,6 +165,22 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
                 </div>
               );
             })}
+          <button
+            className="mine-row as-div"
+            onClick={async () => {
+              if (!window.confirm('清理无数据且长期离线的终端记录?(不会删除任何日记)')) return;
+              try {
+                const r = await api.forgetStaleTerminals(getDeviceId());
+                setNotice(r > 0 ? `已清理 ${r} 条失效终端记录` : '没有需要清理的记录');
+                setPeers(await relayDevices());
+              } catch (e) {
+                alert((e as Error).message);
+              }
+            }}
+          >
+            <span className="mine-row-label">清理失效终端</span>
+            <span className="mine-row-desc">移除无数据且长期离线的记录</span>
+          </button>
         </div>
       )}
 

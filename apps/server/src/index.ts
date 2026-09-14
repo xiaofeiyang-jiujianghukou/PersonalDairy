@@ -55,6 +55,7 @@ import {
   deviceTouch,
   deviceList,
   deviceSeen,
+  deviceForget,
   pickLeader,
   mboxPush,
   mboxPushToOthers,
@@ -589,6 +590,26 @@ app.post('/api/relay/wait', async (req) => {
   // 只问"我的信箱里有没有东西" —— 协议里没有任何位置概念
   if ((await mboxLen(user.id, f)) > 0) return { hasNew: true };
   return relayWaitOnce(user.id, f, 0);
+});
+
+// ---------- 清理失效/僵尸终端(无数据且已离线) ----------
+// 排查/自检留下的临时设备号会长期挂在注册表里,既干扰"我的终端"列表,也会参与选举。
+app.post('/api/relay/forget', async (req) => {
+  const user = (req as AuthedRequest).user!;
+  const { keep } = (req.body ?? {}) as { keep?: string[] };
+  const keepSet = new Set((keep ?? []).map(String));
+  const now = Date.now();
+  const devices = await deviceList(user.id);
+  const removed: string[] = [];
+  for (const d of devices) {
+    // 保留:调用方指定的设备号(通常是本机)、有数据的设备、以及最近 7 天出现过的设备
+    if (keepSet.has(d.deviceId)) continue;
+    if (d.count > 0 || d.watermark) continue;
+    if (now - d.lastSeen < 7 * 24 * 3600 * 1000) continue;
+    await deviceForget(user.id, d.deviceId);
+    removed.push(d.deviceId);
+  }
+  return { removed, count: removed.length };
 });
 
 // ---------- 在线心跳(独立于 WebSocket):只刷新"我还在",不动水位 ----------
