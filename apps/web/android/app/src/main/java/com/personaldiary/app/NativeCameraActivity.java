@@ -99,6 +99,8 @@ public class NativeCameraActivity extends AppCompatActivity {
     private Runnable longPressRunnable;
     private Runnable tickRunnable;
     private int seconds = 0;
+    /** 重力感应:界面锁竖屏后,靠它判断手机实际怎么握,保证照片方向正确。 */
+    private android.view.OrientationEventListener orientationListener;
 
     private int dp(float v) {
         return Math.round(TypedValue.applyDimension(
@@ -113,8 +115,33 @@ public class NativeCameraActivity extends AppCompatActivity {
         w.setNavigationBarColor(Color.BLACK);
         w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         scanMode = "scan".equals(getIntent().getStringExtra(EXTRA_MODE));
+        applyFullscreen();
         buildUi();
         startCamera();
+        startOrientationTracking();
+    }
+
+    /**
+     * 真全屏:内容铺到状态栏/导航栏下面,并把两条系统栏隐藏(沉浸式)。
+     * 进入时应用一次,窗口重新获得焦点时再应用一次(被系统栏打断后能自动恢复)。
+     */
+    private void applyFullscreen() {
+        try {
+            androidx.core.view.WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+            androidx.core.view.WindowInsetsControllerCompat c =
+                    androidx.core.view.WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+            c.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars());
+            c.setSystemBarsBehavior(
+                    androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        } catch (Exception ignored) {
+            /* 老机型兜底:忽略即可,画面依旧是铺满的 */
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) applyFullscreen(); // 从系统栏/多任务回来后自动恢复全屏
     }
 
     private ImageView icon(int resId) {
@@ -176,11 +203,27 @@ public class NativeCameraActivity extends AppCompatActivity {
         hintLp.bottomMargin = dp(20);
         bottom.addView(hintView, hintLp);
 
-        FrameLayout controls = new FrameLayout(this);
+        /*
+         * 控制行:**三件套作为一个整体居中,间距固定**。
+         *
+         * 之前把 ⚡ 和 ⟳ 分别钉在屏幕左右边缘(gravity=START/END),竖屏时离快门很近、
+         * 一横屏就被撑到屏幕两端 —— 看起来就是"按钮跟着屏幕方向变了位置"。
+         * 现在整行 WRAP_CONTENT + 居中,快门居中、两侧固定间距:
+         * 无论竖屏还是横屏,按钮相对快门的位置永远不变。
+         */
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.HORIZONTAL);
+        controls.setGravity(Gravity.CENTER);
         controls.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(96)));
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(96)));
 
-        // 快门
+        // ⚡ 闪光灯(纯白,开/关用"划线"区分)
+        flashBtn = icon(R.drawable.ic_flash_on);
+        flashBtn.setPadding(dp(12), dp(12), dp(12), dp(12));
+        flashBtn.setOnClickListener(v -> toggleFlash());
+        controls.addView(flashBtn, new LinearLayout.LayoutParams(dp(52), dp(52)));
+
+        // 快门(居中):环 + 内圆
         FrameLayout shutter = new FrameLayout(this);
         View shutterRing = new View(this);
         android.graphics.drawable.GradientDrawable sr = new android.graphics.drawable.GradientDrawable();
@@ -201,27 +244,16 @@ public class NativeCameraActivity extends AppCompatActivity {
         innerLp.gravity = Gravity.CENTER;
         shutter.addView(shutterInner, innerLp);
 
-        FrameLayout.LayoutParams shutterLp = new FrameLayout.LayoutParams(dp(96), dp(96));
-        shutterLp.gravity = Gravity.CENTER;
+        LinearLayout.LayoutParams shutterLp = new LinearLayout.LayoutParams(dp(96), dp(96));
+        shutterLp.leftMargin = dp(34);
+        shutterLp.rightMargin = dp(34);
         controls.addView(shutter, shutterLp);
 
-        // ⚡ 左
-        flashBtn = icon(R.drawable.ic_flash_on);
-        flashBtn.setPadding(dp(12), dp(12), dp(12), dp(12));
-        FrameLayout.LayoutParams flashLp = new FrameLayout.LayoutParams(dp(52), dp(52));
-        flashLp.gravity = Gravity.START | Gravity.CENTER_VERTICAL;
-        flashLp.leftMargin = dp(34);
-        flashBtn.setOnClickListener(v -> toggleFlash());
-        controls.addView(flashBtn, flashLp);
-
-        // ⟳ 右
+        // ⟳ 前后置
         ImageView flip = icon(R.drawable.ic_flip);
         flip.setPadding(dp(12), dp(12), dp(12), dp(12));
-        FrameLayout.LayoutParams flipLp = new FrameLayout.LayoutParams(dp(52), dp(52));
-        flipLp.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
-        flipLp.rightMargin = dp(34);
         flip.setOnClickListener(v -> switchCamera());
-        controls.addView(flip, flipLp);
+        controls.addView(flip, new LinearLayout.LayoutParams(dp(52), dp(52)));
 
         bottom.addView(controls);
         FrameLayout.LayoutParams bottomLp = new FrameLayout.LayoutParams(
@@ -480,7 +512,34 @@ public class NativeCameraActivity extends AppCompatActivity {
         syncTargetRotation();
     }
 
-    /** 把拍照方向对齐到当前屏幕方向(横屏/竖屏都要正确)。 */
+    /**
+     * 按**手机上实际的握持方向**设置拍照方向。
+     *
+     * 界面锁竖屏(按钮位置固定)后,屏幕方向恒为竖屏,所以不能再拿屏幕方向当依据 ——
+     * 必须用重力感应:手机横着拿时,拍出来的照片也要是横的。
+     */
+    private void startOrientationTracking() {
+        if (orientationListener != null) return;
+        orientationListener = new android.view.OrientationEventListener(this) {
+            @Override
+            public void onOrientationChanged(int orientation) {
+                if (orientation == ORIENTATION_UNKNOWN || imageCapture == null) return;
+                int rotation;
+                if (orientation >= 45 && orientation < 135) rotation = android.view.Surface.ROTATION_270;
+                else if (orientation >= 135 && orientation < 225) rotation = android.view.Surface.ROTATION_180;
+                else if (orientation >= 225 && orientation < 315) rotation = android.view.Surface.ROTATION_90;
+                else rotation = android.view.Surface.ROTATION_0;
+                try {
+                    imageCapture.setTargetRotation(rotation);
+                } catch (Exception ignored) {
+                    /* 忽略 */
+                }
+            }
+        };
+        if (orientationListener.canDetectOrientation()) orientationListener.enable();
+    }
+
+    /** 兜底:拿不到重力感应时,退化为按屏幕方向。 */
     private void syncTargetRotation() {
         try {
             android.view.Display d = previewView != null ? previewView.getDisplay() : null;
@@ -638,6 +697,7 @@ public class NativeCameraActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         try {
+            if (orientationListener != null) orientationListener.disable();
             if (recording != null) recording.stop();
             if (provider != null) provider.unbindAll();
             if (barcodeScanner != null) barcodeScanner.close();

@@ -26,13 +26,13 @@
         </activity>
 
         <!-- 原生相机(CameraX):全屏无标题。
-             注意:这里**不能锁竖屏** —— 锁了之后系统始终认为屏幕是竖的,
-             用户横着拍时 CameraX 会按竖屏写照片方向,存下来的照片就是歪的。
-             改为跟随设备方向(configChanges 已声明,旋转时不会重建 Activity)。 -->
+             界面锁竖屏:相机按钮永远在同一位置(横屏时界面不旋转、按钮不动)。
+             照片方向**不靠屏幕方向**,而是用重力感应判断手机怎么握的(见 Activity 里
+             ​OrientationEventListener):界面不动,拍照方向依然正确。 -->
         <activity
             android:name=".NativeCameraActivity"
             android:theme="@style/AppTheme.NoActionBar"
-            android:screenOrientation="fullSensor"
+            android:screenOrientation="portrait"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode|navigation|density"
             android:exported="false" />
 
