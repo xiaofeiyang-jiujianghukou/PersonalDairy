@@ -122,6 +122,11 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
   const counts = visiblePeers.map((d) => d.count);
   const minC = counts.length ? Math.min(...counts) : 0;
   const maxC = counts.length ? Math.max(...counts) : 0;
+  // 本机是否持有最新数据(是的话,其它终端应该来向本机拉)
+  const selfWatermark = peers.find((d) => d.deviceId === getDeviceId())?.watermark ?? '';
+  const newestWatermark = peers.reduce((m, d) => (d.watermark > m ? d.watermark : m), '');
+  const selfIsNewest = Boolean(selfWatermark) && selfWatermark >= newestWatermark;
+
   // 摘要回答一个真正关心的问题:各终端是否一致(收敛)
   const termSummary = visiblePeers.length
     ? `${onlineCount} 台在线 · ${minC === maxC ? `已一致 ${maxC} 条` : `未一致 ${minC}~${maxC} 条`}`

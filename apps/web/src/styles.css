@@ -1756,3 +1756,13 @@ a {
   cursor: pointer;
   padding: 0;
 }
+
+/* 「终端管理」标题行:左边折叠开关,右边刷新按钮 */
+.mine-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 12px;
+}
+
+.mine-section-head .mine-section-title.as-toggle { flex: 1 1 auto; }
