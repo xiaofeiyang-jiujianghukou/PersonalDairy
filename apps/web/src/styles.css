@@ -1502,6 +1502,8 @@ a {
   position: absolute;
   top: 50%;
   left: 50%;
+  pointer-events: none;   /* 点击交给整块画面,避免按钮自己吃掉点击 */
+  transition: opacity 0.2s ease-out;
   transform: translate(-50%, -50%);
   display: inline-flex;
   align-items: center;
@@ -1618,3 +1620,6 @@ a {
   opacity: 0.75;
   word-break: break-all;
 }
+
+/* 播放中把按钮淡一些,不挡画面;鼠标移上去再变明显 */
+.canvas-video:hover .canvas-video-play { opacity: 0.95; }

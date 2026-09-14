@@ -1,6 +1,6 @@
 {
   "name": "@diary/web",
-  "version": "0.16.30",
+  "version": "0.16.31",
   "private": true,
   "type": "module",
   "scripts": {

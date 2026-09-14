@@ -33,6 +33,12 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
     let alive = true;
     setFailed(false);
     setDiag('');
+    // 换视频时必须重置画布尺寸:否则会沿用上一条视频的宽高,导致方向/比例错乱(实测)
+    const c0 = canvasRef.current;
+    if (c0) {
+      c0.width = 0;
+      c0.height = 0;
+    }
     void (async () => {
       try {
         const blob = await (await fetch(blobUrl)).blob();
@@ -204,7 +210,11 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
       >
         {full ? '⤡' : '⛶'}
       </button>
-      {!playing && !failed && <span className="canvas-video-play">▶</span>}
+      {!failed && (
+        <span className="canvas-video-play" aria-hidden>
+          {playing ? '❚❚' : '▶'}
+        </span>
+      )}
       <div className="canvas-video-bar">
         <div className="canvas-video-bar-fill" style={{ width: `${Math.round(progress * 100)}%` }} />
       </div>
