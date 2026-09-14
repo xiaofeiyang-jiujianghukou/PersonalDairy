@@ -93,24 +93,8 @@ export async function resolveVideoRef(ref: string): Promise<string> {
   if (ref.startsWith('diary-video:')) {
     const id = ref.slice('diary-video:'.length);
     // 同图片:先读本机媒体库(服务端不保存内容,电脑端去要只会 404 → 视频打不开)
-    /*
-     * 桌面端(Tauri)必须给 <video> 一个 data: URL:实测 src=blob:tauri://localhost/… 时
-     * 媒体加载器直接报 MEDIA_ERR_SRC_NOT_SUPPORTED / NETWORK_NO_SOURCE(压根不加载)。
-     * 图片用 blob 没问题,只有 video 的加载路径是这样。手机上两者都可以。
-     */
     const local = await getImage(id);
-    if (local) {
-      const blob = await withGoodType(local, 'video');
-      if (!isPhoneMode()) {
-        return await new Promise<string>((resolve) => {
-          const fr = new FileReader();
-          fr.onload = () => resolve(String(fr.result));
-          fr.onerror = () => resolve('');
-          fr.readAsDataURL(blob);
-        });
-      }
-      return URL.createObjectURL(blob);
-    }
+    if (local) return URL.createObjectURL(await withGoodType(local, 'video'));
     if (isPhoneMode()) return '';
     const res = await (await getFetch())(`/api/media/${id}`);
     if (!res.ok) return '';

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { resolveMediaRef } from '../lib/image';
+import { isTauri } from '../lib/net';
+import CanvasVideo from './CanvasVideo';
 import ImageViewer from './ImageViewer';
 
 /**
@@ -14,6 +16,9 @@ export default function ResolvedImage({ src, alt }: { src?: string; alt?: string
   const [failed, setFailed] = useState(false);
   const isVideo = !!src && src.startsWith('diary-video:');
   const [zoomed, setZoomed] = useState(false);
+
+  // 桌面端(WebKitGTK)视频层渲染坏 → 用 canvas 自绘播放;手机上仍是原生 <video>
+  const useCanvasPlayer = isVideo && isTauri();
 
   useEffect(() => {
     let alive = true;
@@ -43,6 +48,12 @@ export default function ResolvedImage({ src, alt }: { src?: string; alt?: string
 
   if (failed) return <span className="img-broken">{isVideo ? '视频' : '图片'}</span>;
   if (!url) return <span className="img-loading">{isVideo ? '视频…' : '图片…'}</span>;
+  /*
+   * 桌面端(Tauri)不能把 blob: URL 交给 <video>:实测 src=blob:tauri://localhost/… 时
+   * 媒体加载器直接报 MEDIA_ERR_SRC_NOT_SUPPORTED / NETWORK_NO_SOURCE(压根没加载)。
+   * 图片走 blob 没事,video 的加载路径不一样。所以这里把 blob 转成 data: URL 再喂给它。
+   */
+  if (isVideo && useCanvasPlayer) return <CanvasVideo blobUrl={url} />;
   return isVideo ? (
     <video className="img video" src={url} controls playsInline />
   ) : (
