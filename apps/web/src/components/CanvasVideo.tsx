@@ -64,6 +64,23 @@ function readMp4Orientation(bytes: Uint8Array): { swapped: boolean; ccw: boolean
   return null;
 }
 
+
+/**
+ * 视频播放诊断日志(只记录"状态发生变化"的时刻,避免每帧刷屏)。
+ * 目的是让"随机翻转"自己留下证据:翻转前后 videoWidth/Height、画布尺寸、
+ * 是否走了旋转分支、播放状态 —— 一看便知是哪一层在动。
+ */
+function vidLog(msg: string): void {
+  try {
+    const k = 'diary.videolog';
+    const arr = JSON.parse(localStorage.getItem(k) ?? '[]') as string[];
+    arr.push(`${new Date().toISOString().slice(11, 23)} ${msg}`);
+    localStorage.setItem(k, JSON.stringify(arr.slice(-300)));
+  } catch {
+    /* 记不下就算了 */
+  }
+}
+
 export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
   const [src, setSrc] = useState('');
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -137,12 +154,14 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
         if (c1 && o1) {
           c1.width = o1.swapped ? o1.h : o1.w;
           c1.height = o1.swapped ? o1.w : o1.h;
+          vidLog(`画布初始定尺寸 ${c1.width}x${c1.height} 并涂黑`);
           const g = c1.getContext('2d');
           if (g) {
             g.fillStyle = '#000';
             g.fillRect(0, 0, c1.width, c1.height);
           }
         }
+        vidLog(`解析方向 swapped=${orientRef.current?.swapped} ccw=${orientRef.current?.ccw} 文件尺寸=${orientRef.current?.w}x${orientRef.current?.h}`);
         setSrc(dataUrl);
         setDiag(`data URL ${(dataUrl.length / 1024 / 1024).toFixed(1)}MB`);
       } catch (e) {
@@ -184,6 +203,7 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
     let stopped = false;
     let lastProgressAt = 0;
     let sizeLocked = lockRef.current;
+    let lastSeen = '';
     const draw = (): void => {
       if (stopped) return;
       const v = videoRef.current;
@@ -215,11 +235,25 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
              * 差异时**把帧旋转 90° 再画**,而不是拉伸 —— 否则文字会变成竖的(实测)。
              */
             const o = orientRef.current;
-            if (o?.swapped) {
-              // 文件标注了 90° 旋转:逆时针转正后再铺满(方向已用真实文件校准)
+            const sig = `vw=${v.videoWidth} vh=${v.videoHeight} canvas=${c.width}x${c.height} swapped=${o?.swapped} paused=${v.paused} rs=${v.readyState}`;
+            if (sig !== lastSeen) {
+              lastSeen = sig;
+              vidLog(`帧状态变化: ${sig}`);
+            }
+            /*
+             * 逐帧补偿 —— 这是"翻硬币"的正解(日志实测):
+             * WebKit 有时把**未旋转的竖帧**交给我(912×1920),有时把**已经旋转好的横帧**
+             * 交给我(1920×912),两种都可能出现。所以不能再"统一再转 90°":
+             *   · 文件标注需要旋转 且 当前帧是竖的  → 说明它还没转,我自己逆时针转 90°
+             *   · 否则(它已经转好了,或文件本来就不需要旋转) → 直接铺满,不要再动
+             * 这样两种情况都归一到同一个正立画面,不再有随机性。
+             */
+            const fileNeedsRotation = Boolean(o?.swapped);
+            const frameStillUnrotated = v.videoWidth < v.videoHeight;
+            if (fileNeedsRotation && frameStillUnrotated) {
               ctx.save();
               ctx.translate(c.width / 2, c.height / 2);
-              ctx.rotate(o.ccw ? -Math.PI / 2 : Math.PI / 2);
+              ctx.rotate(o?.ccw ? -Math.PI / 2 : Math.PI / 2);
               ctx.drawImage(v, -c.height / 2, -c.width / 2, c.height, c.width);
               ctx.restore();
             } else {

@@ -1,6 +1,6 @@
 {
   "name": "@diary/server",
-  "version": "0.16.41",
+  "version": "0.16.43",
   "private": true,
   "type": "module",
   "scripts": {
