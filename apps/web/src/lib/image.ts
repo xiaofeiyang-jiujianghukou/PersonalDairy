@@ -92,10 +92,10 @@ export async function uploadMedia(file: File): Promise<string> {
 export async function resolveVideoRef(ref: string): Promise<string> {
   if (ref.startsWith('diary-video:')) {
     const id = ref.slice('diary-video:'.length);
-    if (isPhoneMode()) {
-      const blob = await getImage(id);
-      return blob ? URL.createObjectURL(blob) : '';
-    }
+    // 同图片:先读本机媒体库(服务端不保存内容,电脑端去要只会 404 → 视频打不开)
+    const local = await getImage(id);
+    if (local) return URL.createObjectURL(local);
+    if (isPhoneMode()) return '';
     const res = await (await getFetch())(`/api/media/${id}`);
     if (!res.ok) return '';
     const blob = await res.blob();
@@ -116,10 +116,16 @@ export async function resolveMediaRef(ref: string): Promise<string> {
 export async function resolveImageRef(ref: string): Promise<string> {
   if (ref.startsWith('diary-img:')) {
     const id = ref.slice('diary-img:'.length);
-    if (isPhoneMode()) {
-      const blob = await getImage(id);
-      return blob ? URL.createObjectURL(blob) : '';
-    }
+    /*
+     * **所有平台都先读本机媒体库**。
+     * 以前是"手机读本地、电脑去服务端要" —— 但按我们的架构,服务端**不保存日记内容**,
+     * 电脑端去要必然是 404,于是电脑上图片/视频都打不开(实测问题)。
+     * 同步已经把媒体文件搬到每台设备的本地库里了,直接读本地即可。
+     * 只有本机确实没有(旧数据/迁移中)才回落到服务端。
+     */
+    const local = await getImage(id);
+    if (local) return URL.createObjectURL(local);
+    if (isPhoneMode()) return '';
     const res = await (await getFetch())(`/api/images/${id}`);
     if (!res.ok) return '';
     const blob = await res.blob();
