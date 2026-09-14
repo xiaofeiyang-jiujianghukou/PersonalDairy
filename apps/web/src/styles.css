@@ -1625,3 +1625,59 @@ a {
 
 /* 播放中把按钮淡一些,不挡画面;鼠标移上去再变明显 */
 .canvas-video:hover .canvas-video-play { opacity: 0.95; }
+
+/* 桌面端视频卡片:真实封面帧 + 居中播放按钮 + 时长;点击交给系统播放器 */
+.video-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 240px;
+  padding: 20px;
+  border: 0;
+  border-radius: 12px;
+  background-color: #0d0d0d;
+  background-size: cover;
+  background-position: center;
+  color: #fff;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.video-card.has-poster::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 45%, rgba(0, 0, 0, 0.6) 100%);
+}
+
+.video-card-play {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  height: 60px;
+  padding-left: 4px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.94);
+  color: #111;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
+.video-card-meta {
+  position: relative;
+  z-index: 1;
+  display: none;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+}
+
+.video-card.has-poster .video-card-meta { display: flex; }
+
+.video-card-title { font-size: 15px; font-weight: 600; }
+.video-card-sub { font-size: 12px; opacity: 0.85; }
