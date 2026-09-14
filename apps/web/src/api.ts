@@ -594,9 +594,23 @@ export function startPresenceBeat(): void {
     void http<{ ok: boolean }>('/api/relay/presence', {
       method: 'POST',
       body: JSON.stringify({ from: getDeviceId() }),
-    }).catch(() => {
-      /* 网络不好就算,下一轮再报 */
-    });
+    })
+      .catch(() => {
+        /* 网络不好就算,下一轮再报 */
+      })
+      .finally(() => {
+        /*
+         * 心跳顺带取一次件。
+         * 原因:WebSocket 万一"悄无声息地断了"(既没收到唤醒、也没触发重连),
+         * 客户端就再没有任何机会知道"别人给我发了东西" —— 实测会遇到"很久才同步"。
+         * 每 30 秒顺手取一次,最坏延迟就被压到 30 秒;WS 正常时仍是秒级。
+         */
+        void getSyncEngine()
+          .drain()
+          .catch(() => {
+            /* 忽略 */
+          });
+      });
   };
   beat();
   presenceTimer = window.setInterval(beat, 30_000);

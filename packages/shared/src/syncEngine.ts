@@ -621,6 +621,11 @@ export class SyncEngine {
       this.closeSyncSession();
     }
     if (merged > 0) {
+      /*
+       * 只要这一轮真的合并进了数据,就报给界面 —— 包括"对端主动推给我"的情况
+       * (那种情况不会开启同步会话,以前界面上完全没有提示,用户以为没同步)。
+       */
+      if (!this.syncSession?.open) this.o.onSyncEvent?.({ phase: 'done', merged });
       this.o.onChange?.();
       // 合并后立刻上报新水位/向量/条目数,避免服务端设备表里是合并前的过期快照
       void this.heartbeat();
