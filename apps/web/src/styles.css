@@ -1604,3 +1604,17 @@ a {
   cursor: pointer;
   line-height: 1;
 }
+
+.canvas-video-error {
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px;
+  text-align: center;
+}
+
+.canvas-video-diag {
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: 0.75;
+  word-break: break-all;
+}

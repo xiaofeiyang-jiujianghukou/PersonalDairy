@@ -1,6 +1,6 @@
 {
   "name": "@diary/shared",
-  "version": "0.16.28",
+  "version": "0.16.29",
   "private": true,
   "type": "module",
   "main": "src/index.ts",

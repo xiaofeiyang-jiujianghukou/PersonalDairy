@@ -14,6 +14,12 @@ export default function CanvasVideo({ src }: { src: string }) {
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [failed, setFailed] = useState(false);
+  /**
+   * 诊断信息:视频失败的**真实原因**。
+   * 之前我靠猜着改(改隐藏方式、改 play 重试)反复没解决 —— 现在把浏览器给的
+   * 错误码 / readyState / networkState 直接显示出来,一眼定位,不再猜。
+   */
+  const [diag, setDiag] = useState('');
   const [full, setFull] = useState(false); // 铺满屏幕(同一个 canvas 放大,不重载)
 
   // 打开后先静默预载一帧,让 canvas 立刻有画面(不自动出声)
@@ -129,7 +135,14 @@ export default function CanvasVideo({ src }: { src: string }) {
           objectFit: 'contain',
           zIndex: 0,
         }}
-        onError={() => setFailed(true)}
+        onError={(e) => {
+          const el = e.currentTarget;
+          const err = el.error;
+          setDiag(
+            `错误码 ${err?.code ?? '?'}${err?.message ? ` · ${err.message}` : ''} · readyState=${el.readyState} · networkState=${el.networkState} · src=${el.currentSrc.slice(0, 24)}…`,
+          );
+          setFailed(true);
+        }}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => {
@@ -137,7 +150,13 @@ export default function CanvasVideo({ src }: { src: string }) {
           setProgress(0);
         }}
       />
-      {failed && <div className="canvas-video-error">这个视频无法播放</div>}
+      {failed && (
+        <div className="canvas-video-error">
+          <div>这个视频无法播放</div>
+          {diag && <div className="canvas-video-diag">{diag}</div>}
+          <div className="canvas-video-diag">请把这段文字截图给开发者</div>
+        </div>
+      )}
       {/* 铺满屏幕 / 回到原位 */}
       <button
         type="button"
