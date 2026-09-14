@@ -635,8 +635,17 @@ export function getSyncEngine(): SyncEngine {
     },
     onChange: () => emitDataChanged(),
     onSyncEvent: (e) => handleEngineSyncEvent(e),
-    log: (m) => {
+    log: (m: string) => {
       if (localStorage.getItem('diary.debugSync') === '1') console.log(m);
+      // 全程留痕到本地:排查"某台设备为何没收到"时,直接读这份日志即可
+      try {
+        const k = 'diary.synclog';
+        const arr = JSON.parse(localStorage.getItem(k) ?? '[]') as string[];
+        arr.push(`${new Date().toISOString().slice(11, 23)} ${m}`);
+        localStorage.setItem(k, JSON.stringify(arr.slice(-400)));
+      } catch {
+        /* 忽略 */
+      }
     },
   });
   return syncEngine;
