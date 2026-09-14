@@ -1,0 +1,7 @@
+# 用 mold 做链接器(需要 apt install mold)。
+#
+# Rust 链接阶段是构建里另一个大头,默认的 GNU ld 在大型二进制上很慢。
+# mold 并行链接,实测能明显缩短这一步。若某台机器没装 mold,构建会报错 ——
+# 那种情况下删掉这个文件即可(只是慢一点,功能不受影响)。
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
