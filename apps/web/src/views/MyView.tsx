@@ -15,6 +15,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
   const [showSettings, setShowSettings] = useState(false);
   const [chatMode, setChatMode] = useState<CompanionMode | null>(null);
   const [showMentor, setShowMentor] = useState(false);
+  const [showTerminals, setShowTerminals] = useState(false); // 我的终端默认收起
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   // 本机同步自查状态(全部读本地,不发网络请求):通道 / 本机条目数 / 水位 / 上次同步
@@ -111,6 +112,16 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
     { label: '退出登录', desc: '', onClick: logout, danger: true },
   ];
 
+  // 收起时也能一眼看到概况:几台在线、合计多少条
+  const visiblePeers = peers.filter((d) => {
+    const isSelf = d.deviceId === getDeviceId();
+    return isSelf || d.online || d.count > 0 || Boolean(d.watermark);
+  });
+  const onlineCount = visiblePeers.filter((d) => d.online).length;
+  const maxCount = visiblePeers.reduce((m, d) => Math.max(m, d.count), 0);
+  const termSummary = visiblePeers.length
+    ? `${onlineCount}/${visiblePeers.length} 台在线 · ${maxCount} 条`
+    : '';
   return (
     <div className="view">
       <h1 className="view-title">我的</h1>
@@ -141,8 +152,18 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
       {/* 我的终端:每台设备是否在线、各有多少条、最新到什么时候 —— 一眼看清收敛情况 */}
       {peers.length > 0 && (
         <div className="mine-section">
-          <h3 className="mine-section-title">我的终端</h3>
-          {peers
+          <button
+            type="button"
+            className="mine-section-title as-toggle"
+            onClick={() => setShowTerminals((v) => !v)}
+          >
+            <span>我的终端</span>
+            <span className="mine-section-summary">
+              {termSummary}
+              <span className={`chevron${showTerminals ? ' open' : ''}`}>›</span>
+            </span>
+          </button>
+          {showTerminals && peers
             .filter((d) => {
               // 隐藏"僵尸终端":没有任何数据、又不在线 —— 多半是排查/自检留下的临时设备号
               const isSelf = d.deviceId === getDeviceId();
