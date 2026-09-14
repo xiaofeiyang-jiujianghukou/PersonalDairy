@@ -175,14 +175,10 @@ public class NativeCameraActivity extends AppCompatActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         // 点按对焦的提示圈
-        focusRing = new View(this);
-        android.graphics.drawable.GradientDrawable ring = new android.graphics.drawable.GradientDrawable();
-        ring.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-        ring.setColor(Color.TRANSPARENT);
-        ring.setStroke(dp(2), Color.WHITE);
-        focusRing.setBackground(ring);
+        // 对焦指示:四角括号的"靶向"方框(不要圆圈)
+        focusRing = new FocusTarget(this);
         focusRing.setAlpha(0f);
-        focusRing.setLayoutParams(new FrameLayout.LayoutParams(dp(72), dp(72)));
+        focusRing.setLayoutParams(new FrameLayout.LayoutParams(dp(78), dp(78)));
         root.addView(focusRing);
 
         // 左上角 ✕
@@ -554,7 +550,12 @@ public class NativeCameraActivity extends AppCompatActivity {
                 else if (orientation >= 225 && orientation < 315) rotation = android.view.Surface.ROTATION_90;
                 else rotation = android.view.Surface.ROTATION_0;
                 try {
-                    imageCapture.setTargetRotation(rotation);
+                    imageCapture.setTargetRotation(rotation); // 照片方向
+                } catch (Exception ignored) {
+                    /* 忽略 */
+                }
+                try {
+                    if (videoCapture != null) videoCapture.setTargetRotation(rotation); // 录像方向(否则横拍存下来还是竖的)
                 } catch (Exception ignored) {
                     /* 忽略 */
                 }
@@ -568,6 +569,7 @@ public class NativeCameraActivity extends AppCompatActivity {
         try {
             android.view.Display d = previewView != null ? previewView.getDisplay() : null;
             if (imageCapture != null && d != null) imageCapture.setTargetRotation(d.getRotation());
+            if (videoCapture != null && d != null) videoCapture.setTargetRotation(d.getRotation());
         } catch (Exception ignored) {
             /* 拿不到显示信息时保持默认 */
         }
