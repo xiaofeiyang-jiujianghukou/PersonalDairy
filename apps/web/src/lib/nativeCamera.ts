@@ -6,9 +6,15 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
  * 和微信一致(铺满、不歪、无黑边),不需要旋转/重编码那套 Web 兜底方案。
  */
 interface NativeCameraPlugin {
-  open(): Promise<{ path?: string; mime?: string }>;
-  scan(): Promise<{ text?: string }>;
+  open(): Promise<{ path?: string; mime?: string; cancelled?: boolean }>;
+  scan(): Promise<{ text?: string; cancelled?: boolean }>;
   readFile(options: { path: string; mime?: string }): Promise<{ data?: string; mime?: string }>;
+}
+
+/** 用户主动取消(点 ✕ / 返回键)不该被当成错误弹提示。 */
+function isCancelled(e: unknown): boolean {
+  const msg = String((e as Error)?.message ?? e ?? '');
+  return /取消|cancel/i.test(msg);
 }
 
 const NativeCamera = registerPlugin<NativeCameraPlugin>('NativeCamera');
@@ -36,7 +42,14 @@ function base64ToBytes(b64: string): Uint8Array {
  * 失败再退回插件的 readFile(base64)。
  */
 export async function takeWithNativeCamera(): Promise<File | null> {
-  const r = await NativeCamera.open();
+  let r: { path?: string; mime?: string; cancelled?: boolean } | null = null;
+  try {
+    r = await NativeCamera.open();
+  } catch (e) {
+    if (isCancelled(e)) return null; // 用户取消 → 静默
+    throw e;
+  }
+  if (r?.cancelled) return null;
   const path = r?.path;
   if (!path) return null;
   const name = baseName(path);
@@ -65,6 +78,12 @@ export async function takeWithNativeCamera(): Promise<File | null> {
  * 返回识别到的文本;用户取消时返回 null。
  */
 export async function scanWithNativeCamera(): Promise<string | null> {
-  const r = await NativeCamera.scan();
-  return r?.text ?? null;
+  try {
+    const r = await NativeCamera.scan();
+    if (r?.cancelled) return null;
+    return r?.text ?? null;
+  } catch (e) {
+    if (isCancelled(e)) return null; // 用户取消 → 静默
+    throw e;
+  }
 }

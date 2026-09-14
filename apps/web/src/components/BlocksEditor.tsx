@@ -191,7 +191,11 @@ export default function BlocksEditor({
                     .then((file) => {
                       if (file) insertAtEnd(file);
                     })
-                    .catch((e) => alert((e as Error).message))
+                    .catch((e) => {
+                      const msg = String((e as Error)?.message ?? '');
+                      if (/取消|cancel/i.test(msg)) return; // 用户取消:不打扰
+                      alert(msg);
+                    })
                     .finally(() => setUploading(false));
                 } else {
                   setShowCamera(true); // 桌面端等:用 Web 相机兜底

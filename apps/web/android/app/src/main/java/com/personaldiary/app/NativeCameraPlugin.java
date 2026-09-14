@@ -98,7 +98,10 @@ public class NativeCameraPlugin extends Plugin {
     private void scanResult(PluginCall call, ActivityResult result) {
         if (call == null) return;
         if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
-            call.reject("已取消");
+            // 取消扫码同样静默返回
+            JSObject ret = new JSObject();
+            ret.put("cancelled", true);
+            call.resolve(ret);
             return;
         }
         JSObject ret = new JSObject();
@@ -110,8 +113,14 @@ public class NativeCameraPlugin extends Plugin {
     private void cameraResult(PluginCall call, ActivityResult result) {
         if (call == null) return;
         if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
+            // 用户主动取消(点 ✕ / 返回键)→ 正常返回,不当作错误(否则界面会弹"已取消"那种提示)
             String err = result.getData() != null ? result.getData().getStringExtra("error") : null;
-            call.reject(err != null ? err : "已取消");
+            if (err != null) call.reject(err);
+            else {
+                JSObject ret = new JSObject();
+                ret.put("cancelled", true);
+                call.resolve(ret);
+            }
             return;
         }
         String path = result.getData().getStringExtra(NativeCameraActivity.EXTRA_PATH);
