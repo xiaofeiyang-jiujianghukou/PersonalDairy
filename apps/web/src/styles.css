@@ -1681,3 +1681,20 @@ a {
 
 .video-card-title { font-size: 15px; font-weight: 600; }
 .video-card-sub { font-size: 12px; opacity: 0.85; }
+
+/* 「我的终端」列表项:三列(名称 / 明细 / 状态徽标) */
+.mine-row.as-div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  text-align: left;
+}
+
+.mine-row.as-div:first-of-type { border-top: 0; }
+
+.mine-row.as-div .mine-row-label { flex: 0 0 auto; }
+.mine-row.as-div .mine-row-desc { flex: 1 1 auto; min-width: 0; }

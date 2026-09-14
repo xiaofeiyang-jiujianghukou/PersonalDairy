@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, authApi, clearToken, exportUrl, relayDevices, relaySyncNow, setLastSyncAt, setRelayCursor } from '../api';
 import { getSyncEngine } from '../api';
 import { getSyncChannel } from '../lib/syncAuto';
+import { getDeviceId } from '../lib/device';
 import SettingsModal from '../components/SettingsModal';
 import CompanionModal, { type CompanionMode } from '../components/CompanionModal';
 import MentorReportModal from '../components/MentorReportModal';
@@ -136,6 +137,31 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
       </div>
 
       {notice && <p className="ok" style={{ textAlign: 'center' }}>{notice}</p>}
+
+      {/* 我的终端:每台设备是否在线、各有多少条、最新到什么时候 —— 一眼看清收敛情况 */}
+      {peers.length > 0 && (
+        <div className="mine-section">
+          <h3 className="mine-section-title">我的终端</h3>
+          {peers
+            .slice()
+            .sort((a, b) => Number(b.online) - Number(a.online) || a.deviceId.localeCompare(b.deviceId))
+            .map((d) => {
+              const isSelf = d.deviceId === getDeviceId();
+              return (
+                <div key={d.deviceId} className="mine-row as-div">
+                  <span className="mine-row-label">
+                    {isSelf ? '本机' : d.deviceId.slice(0, 8)}
+                    {isSelf && <span className="mine-badge online" style={{ marginLeft: 8 }}>这台</span>}
+                  </span>
+                  <span className="mine-row-desc">
+                    {d.count} 条 · 最新 {d.watermark ? new Date(d.watermark).toLocaleString('zh-CN', { hour12: false }) : '无数据'}
+                  </span>
+                  <span className={`mine-badge${d.online ? ' online' : ''}`}>{d.online ? '在线' : '离线'}</span>
+                </div>
+              );
+            })}
+        </div>
+      )}
 
       <p className="mine-version">
         版本 v{__APP_VERSION__} · 唤醒通道 {channel === 'ws' ? 'WebSocket' : '长轮询(兜底)'}
