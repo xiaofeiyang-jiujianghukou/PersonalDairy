@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { api, authApi, clearToken, exportUrl, relayDevices, relaySyncNow, setLastSyncAt, setRelayCursor } from '../api';
 import { getSyncEngine } from '../api';
 import { getSyncChannel } from '../lib/syncAuto';
@@ -46,7 +46,8 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
     };
     void refresh();
     const t = setInterval(() => void refresh(), 3000);
-    return () => {
+
+  return () => {
       alive = false;
       clearInterval(t);
     };
@@ -122,6 +123,61 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
   const termSummary = visiblePeers.length
     ? `${onlineCount}/${visiblePeers.length} 台在线 · ${maxCount} 条`
     : '';
+    // 终端管理区块(默认收起,点标题展开)
+  const terminalsSection = peers.length > 0 && (
+    <div className="mine-section">
+        <button
+        type="button"
+        className="mine-section-title as-toggle"
+        onClick={() => setShowTerminals((v) => !v)}
+        >
+        <span>终端管理</span>
+        <span className="mine-section-summary">
+          {termSummary}
+          <span className={`chevron${showTerminals ? ' open' : ''}`}>›</span>
+        </span>
+        </button>
+        {showTerminals && peers
+        .filter((d) => {
+          // 隐藏"僵尸终端":没有任何数据、又不在线 —— 多半是排查/自检留下的临时设备号
+          const isSelf = d.deviceId === getDeviceId();
+          return isSelf || d.online || d.count > 0 || Boolean(d.watermark);
+        })
+        .slice()
+        .sort((a, b) => Number(b.online) - Number(a.online) || a.deviceId.localeCompare(b.deviceId))
+        .map((d) => {
+          const isSelf = d.deviceId === getDeviceId();
+          return (
+            <div key={d.deviceId} className="mine-row as-div">
+            <span className="mine-row-label">
+              {isSelf ? '本机' : d.deviceId.slice(0, 8)}
+              {isSelf && <span className="mine-badge online" style={{ marginLeft: 8 }}>这台</span>}
+            </span>
+            <span className="mine-row-desc">
+              {d.count} 条 · 最新 {d.watermark ? new Date(d.watermark).toLocaleString('zh-CN', { hour12: false }) : '无数据'}
+            </span>
+            <span className={`mine-badge${d.online ? ' online' : ''}`}>{d.online ? '在线' : '离线'}</span>
+            </div>
+          );
+        })}
+        <button
+        className="mine-row as-div"
+        onClick={async () => {
+          if (!window.confirm('清理无数据且长期离线的终端记录?(不会删除任何日记)')) return;
+          try {
+            const r = await api.forgetStaleTerminals(getDeviceId());
+            setNotice(r > 0 ? `已清理 ${r} 条失效终端记录` : '没有需要清理的记录');
+            setPeers(await relayDevices());
+          } catch (e) {
+            alert((e as Error).message);
+          }
+        }}
+        >
+        <span className="mine-row-label">清理失效终端</span>
+        <span className="mine-row-desc">移除无数据且长期离线的记录</span>
+        </button>
+    </div>
+  );
   return (
     <div className="view">
       <h1 className="view-title">我的</h1>
@@ -139,71 +195,19 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
       </div>
 
       <div className="mine-options">
-        {options.map((o) => (
-          <button key={o.label} className="mine-row" onClick={o.onClick}>
-            <span className="mine-row-label">{o.label}</span>
-            <span className="mine-row-desc">{o.desc}</span>
-          </button>
+        {options.map((o, i) => (
+          <Fragment key={o.label}>
+            <button className="mine-row" onClick={o.onClick}>
+              <span className="mine-row-label">{o.label}</span>
+              <span className="mine-row-desc">{o.desc}</span>
+            </button>
+            {/* 终端管理:紧跟「修改个人信息」之后 */}
+            {i === 0 && terminalsSection}
+          </Fragment>
         ))}
       </div>
 
       {notice && <p className="ok" style={{ textAlign: 'center' }}>{notice}</p>}
-
-      {/* 我的终端:每台设备是否在线、各有多少条、最新到什么时候 —— 一眼看清收敛情况 */}
-      {peers.length > 0 && (
-        <div className="mine-section">
-          <button
-            type="button"
-            className="mine-section-title as-toggle"
-            onClick={() => setShowTerminals((v) => !v)}
-          >
-            <span>我的终端</span>
-            <span className="mine-section-summary">
-              {termSummary}
-              <span className={`chevron${showTerminals ? ' open' : ''}`}>›</span>
-            </span>
-          </button>
-          {showTerminals && peers
-            .filter((d) => {
-              // 隐藏"僵尸终端":没有任何数据、又不在线 —— 多半是排查/自检留下的临时设备号
-              const isSelf = d.deviceId === getDeviceId();
-              return isSelf || d.online || d.count > 0 || Boolean(d.watermark);
-            })
-            .slice()
-            .sort((a, b) => Number(b.online) - Number(a.online) || a.deviceId.localeCompare(b.deviceId))
-            .map((d) => {
-              const isSelf = d.deviceId === getDeviceId();
-              return (
-                <div key={d.deviceId} className="mine-row as-div">
-                  <span className="mine-row-label">
-                    {isSelf ? '本机' : d.deviceId.slice(0, 8)}
-                    {isSelf && <span className="mine-badge online" style={{ marginLeft: 8 }}>这台</span>}
-                  </span>
-                  <span className="mine-row-desc">
-                    {d.count} 条 · 最新 {d.watermark ? new Date(d.watermark).toLocaleString('zh-CN', { hour12: false }) : '无数据'}
-                  </span>
-                  <span className={`mine-badge${d.online ? ' online' : ''}`}>{d.online ? '在线' : '离线'}</span>
-                </div>
-              );
-            })}
-          <button
-            className="mine-row as-div"
-            onClick={async () => {
-              if (!window.confirm('清理无数据且长期离线的终端记录?(不会删除任何日记)')) return;
-              try {
-                const r = await api.forgetStaleTerminals(getDeviceId());
-                setNotice(r > 0 ? `已清理 ${r} 条失效终端记录` : '没有需要清理的记录');
-                setPeers(await relayDevices());
-              } catch (e) {
-                alert((e as Error).message);
-              }
-            }}
-          >
-            <span className="mine-row-label">清理失效终端</span>
-            <span className="mine-row-desc">移除无数据且长期离线的记录</span>
-          </button>
-        </div>
-      )}
 
       <p className="mine-version">
         版本 v{__APP_VERSION__} · 唤醒通道 {channel === 'ws' ? 'WebSocket' : '长轮询(兜底)'}
