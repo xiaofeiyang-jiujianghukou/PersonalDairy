@@ -104,6 +104,8 @@ public class NativeCameraActivity extends AppCompatActivity {
     /** 录制进度环(参考微信:围绕快门一圈绿色进度,满 1 分钟自动结束)。 */
     private RecordRing recordRing;
     private long recordStartAt = 0;
+    /** 上次点预览的时间:用于识别双击(双击 = 直接切换前后摄像头)。 */
+    private long lastPreviewTapAt = 0;
     private static final int MAX_RECORD_MS = 60_000;
 
     private int dp(float v) {
@@ -276,7 +278,16 @@ public class NativeCameraActivity extends AppCompatActivity {
         setContentView(root);
 
         previewView.setOnTouchListener((v, e) -> {
-            if (e.getActionMasked() == MotionEvent.ACTION_UP) focusAt(e.getX(), e.getY());
+            if (e.getActionMasked() != MotionEvent.ACTION_UP) return true;
+            long now = System.currentTimeMillis();
+            // 双击预览 = 直接切换前后摄像头(相机通用手势,和微信一致)
+            if (now - lastPreviewTapAt < 300) {
+                lastPreviewTapAt = 0;
+                switchCamera();
+                return true;
+            }
+            lastPreviewTapAt = now;
+            focusAt(e.getX(), e.getY()); // 单击仍然是"点哪对焦哪"
             return true;
         });
 
