@@ -166,6 +166,23 @@ button.ghost:disabled {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* 关键:按钮区**不参与压缩**。否则左侧长文案(支持 Markdown · 保存后即属于 …)
+     会把「记下来」挤成两行 —— 实测在手机上就变成"记下/来"两行,看着很扁。 */
+  flex: 0 0 auto;
+}
+
+/* 左侧提示文字:允许换行,不要去挤按钮 */
+.composer-bar .hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.5;
+}
+
+/* 按钮文字永不折行 */
+.composer-actions .primary,
+.composer-actions .ghost {
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 /* ---------- 写日记 ---------- */
