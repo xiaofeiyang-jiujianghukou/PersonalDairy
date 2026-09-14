@@ -1502,6 +1502,7 @@ a {
   position: absolute;
   top: 50%;
   left: 50%;
+  z-index: 3;             /* 必须高于 canvas(z-index:1),否则被画面盖住 —— 实测"没有播放按钮"就是这个原因 */
   pointer-events: none;   /* 点击交给整块画面,避免按钮自己吃掉点击 */
   transition: opacity 0.2s ease-out;
   transform: translate(-50%, -50%);
@@ -1531,6 +1532,7 @@ a {
 
 .canvas-video-bar {
   position: absolute;
+  z-index: 3;             /* 同上:进度条也要浮在画面之上 */
   left: 0;
   right: 0;
   bottom: 0;
