@@ -357,9 +357,15 @@ export class SyncEngine {
   }
 
   private fail(stage: string, e: unknown): void {
+    // 记下堆栈的第一段(含文件/行号),否则只能看到报错文字、定位不到出处
+    const where = String((e as Error)?.stack ?? '')
+      .split('\n')
+      .slice(1, 3)
+      .map((l) => l.trim().replace(/^at\s+/, ''))
+      .join(' ← ');
     this.diag.lastError = `${stage}: ${(e as Error)?.message ?? String(e)}`;
     this.diag.lastErrorAt = new Date().toISOString();
-    this.log(`✖ ${this.diag.lastError}`);
+    this.log(`✖ ${this.diag.lastError}${where ? `  【${where}】` : ''}`);
   }
 
   /**

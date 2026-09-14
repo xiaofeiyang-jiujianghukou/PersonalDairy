@@ -103,7 +103,14 @@ app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body,
 });
 
 // 允许本机 / 局域网前端访问(本地优先应用,不做鉴权,数据只在你自己的机器上)。
-await app.register(cors, { origin: true });
+await app.register(cors, {
+  origin: true,
+  credentials: true,
+  // 预检必须显式放行这些头,否则带 Authorization 的请求会被 OPTIONS 挡住(实测 400)
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  maxAge: 86400,
+});
 // WebSocket 通道(即时唤醒)。业务数据仍走 HTTP 的 need/serve/pull,WS 只推"有新消息"。
 await app.register(websocket);
 
