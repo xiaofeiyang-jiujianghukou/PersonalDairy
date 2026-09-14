@@ -8,6 +8,62 @@ import { useEffect, useRef, useState } from 'react';
  * 也就是说坏的只是"视频层合成到屏幕"这一步,那就自己把帧画出来,绕开它。
  * 声音仍由隐藏的 <video> 输出(音频走的是另一条管线,不受影响)。
  */
+
+/**
+ * 从 MP4 字节里读出**权威的显示方向**(就是 ffprobe 读的那个 tkhd 矩阵)。
+ *
+ * 为什么必须自己读:WebKit 汇报的 videoWidth/Height 会"先给未旋转值、后改成旋转值",
+ * 且**改的时机是随机的** —— 跟着它走就会出现"有时正、有时转"的随机翻转(实测)。
+ * 文件里写死的旋转标记则与时机无关,唯一可靠。
+ *
+ * 返回 { swapped, ccw, w, h }:swapped=需要交换宽高(90°/270°),ccw=逆时针(已用真实文件校准)。
+ */
+function readMp4Orientation(bytes: Uint8Array): { swapped: boolean; ccw: boolean; w: number; h: number } | null {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const typeAt = (p: number): string =>
+    String.fromCharCode(bytes[p] ?? 0, bytes[p + 1] ?? 0, bytes[p + 2] ?? 0, bytes[p + 3] ?? 0);
+
+  const walk = (from: number, to: number): Array<[string, number, number]> => {
+    const out: Array<[string, number, number]> = [];
+    let p = from;
+    while (p + 8 <= to) {
+      let size = dv.getUint32(p);
+      const type = typeAt(p + 4);
+      let head = 8;
+      if (size === 1) {
+        size = Number(dv.getBigUint64(p + 8));
+        head = 16;
+      }
+      if (size < head) break;
+      out.push([type, p + head, p + size]);
+      p += size;
+    }
+    return out;
+  };
+
+  const limit = Math.min(bytes.length, 1 << 20); // moov 在前,256KB 足够
+  for (const [t1, s1, e1] of walk(0, limit)) {
+    if (t1 !== 'moov') continue;
+    for (const [t2, s2, e2] of walk(s1, Math.min(e1, limit))) {
+      if (t2 !== 'trak') continue;
+      for (const [t3, s3] of walk(s2, Math.min(e2, limit))) {
+        if (t3 !== 'tkhd') continue;
+        const ver = bytes[s3];
+        let o = s3 + 4 + (ver === 1 ? 32 : 20); // version/flags + 时间/ID/时长
+        o += 16; // reserved(8) + layer(2) + alt(2) + volume(2) + reserved(2)
+        const a = dv.getInt32(o) / 65536;
+        const b = dv.getInt32(o + 4) / 65536;
+        const w = dv.getInt32(o + 36) / 65536;
+        const h = dv.getInt32(o + 40) / 65536;
+        const swapped = Math.abs(a) < 0.5 && Math.abs(Math.abs(b) - 1) < 0.5;
+        if (!w || !h) return null;
+        return { swapped, ccw: b < 0, w: Math.round(w), h: Math.round(h) };
+      }
+    }
+  }
+  return null;
+}
+
 export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
   const [src, setSrc] = useState('');
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -22,6 +78,7 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
    */
   const [diag, setDiag] = useState('');
   const lockRef = useRef(true);
+  const orientRef = useRef<{ swapped: boolean; ccw: boolean; w: number; h: number } | null>(null);
   const [full, setFull] = useState(false); // 铺满屏幕(同一个 canvas 放大,不重载)
 
   /*
@@ -61,6 +118,13 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
           fr.readAsDataURL(blob);
         });
         if (!alive) return;
+        // 顺带读一次文件头里的权威方向(256KB 足够,moov 在文件前部)
+        try {
+          const head = new Uint8Array(await blob.slice(0, 1 << 18).arrayBuffer());
+          orientRef.current = readMp4Orientation(head);
+        } catch {
+          orientRef.current = null;
+        }
         setSrc(dataUrl);
         setDiag(`data URL ${(dataUrl.length / 1024 / 1024).toFixed(1)}MB`);
       } catch (e) {
@@ -114,17 +178,14 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
          * 原始值(1920×912),随后才修正为 912×1920。跟着它变,画面就会从"正"变成"转过去"
          * (实测:第一次播放正常、第二次播放画面转 90°)。锁住第一次的值即可始终稳定。
          */
-        if (!sizeLocked && v.videoWidth && v.videoHeight) {
+        if (!sizeLocked && orientRef.current && v.readyState >= 2) {
           /*
-           * 锁定为**横向**画布(与用户要的"图1"一致):
-           * WebKit 汇报的宽高会中途从"未旋转的 1920×912"变成"旋转后的 912×1920",
-           * 跟着它变画面就会翻来覆去。这里只在第一次测量时定尺寸,并统一取横屏比例
-           * (竖着的测量值转置),之后恒定不变。
+           * 画布尺寸**只依据文件里的旋转标记**(权威、固定),完全不看 WebKit 的汇报
+           * —— 后者会随机地在"未旋转值/旋转值"之间跳,跟着它就会随机翻转(实测)。
            */
-          const a = Math.max(v.videoWidth, v.videoHeight);
-          const b = Math.min(v.videoWidth, v.videoHeight);
-          c.width = a;
-          c.height = b;
+          const o = orientRef.current;
+          c.width = o.swapped ? o.h : o.w;
+          c.height = o.swapped ? o.w : o.h;
           sizeLocked = true;
           lockRef.current = true;
         }
@@ -135,12 +196,12 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
              * 画布锁定为横向,而视频当前帧可能是竖向(WebKit 的汇报会在两者间跳)。
              * 差异时**把帧旋转 90° 再画**,而不是拉伸 —— 否则文字会变成竖的(实测)。
              */
-            const framePortrait = v.videoWidth < v.videoHeight;
-            const canvasLandscape = c.width > c.height;
-            if (framePortrait && canvasLandscape) {
+            const o = orientRef.current;
+            if (o?.swapped) {
+              // 文件标注了 90° 旋转:逆时针转正后再铺满(方向已用真实文件校准)
               ctx.save();
               ctx.translate(c.width / 2, c.height / 2);
-              ctx.rotate(Math.PI / 2);
+              ctx.rotate(o.ccw ? -Math.PI / 2 : Math.PI / 2);
               ctx.drawImage(v, -c.height / 2, -c.width / 2, c.height, c.width);
               ctx.restore();
             } else {
