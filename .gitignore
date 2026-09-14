@@ -34,3 +34,15 @@ data/
 .diary-server.log
 .diary.pid
 .gradle-user-home/
+
+# 安装包/构建产物绝不入库(它们只放在本地 dist/ 里,由构建脚本产出)
+*.apk
+*.aab
+*.deb
+*.AppImage
+*.dmg
+*.ipa
+*.zip
+apps/web/android/app/build/
+apps/web/ios/App/build/
+apps/desktop/src-tauri/target/
