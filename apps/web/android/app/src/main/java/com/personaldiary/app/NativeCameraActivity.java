@@ -407,6 +407,10 @@ public class NativeCameraActivity extends AppCompatActivity {
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                 .setFlashMode(flashOn ? ImageCapture.FLASH_MODE_ON : ImageCapture.FLASH_MODE_OFF)
                 .build();
+        // 照片方向必须跟随"当前屏幕方向":本 Activity 声明了 configChanges,
+        // 旋转屏幕时不会重建,所以必须自己监听并在方向变化时更新 targetRotation,
+        // 否则横着拍出来的照片方向会错(实测问题)。
+        syncTargetRotation();
 
         Recorder recorder = new Recorder.Builder()
                 .setQualitySelector(QualitySelector.fromOrderedList(
@@ -465,6 +469,24 @@ public class NativeCameraActivity extends AppCompatActivity {
             camera = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, b.build());
         } catch (Exception e) {
             finishWithError("打开相机失败:" + e.getMessage());
+        }
+        syncTargetRotation();
+    }
+
+    @Override
+    public void onConfigurationChanged(@NonNull android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        // 屏幕旋转(Activity 未重建)→ 立刻把拍照方向对齐过去
+        syncTargetRotation();
+    }
+
+    /** 把拍照方向对齐到当前屏幕方向(横屏/竖屏都要正确)。 */
+    private void syncTargetRotation() {
+        try {
+            android.view.Display d = previewView != null ? previewView.getDisplay() : null;
+            if (imageCapture != null && d != null) imageCapture.setTargetRotation(d.getRotation());
+        } catch (Exception ignored) {
+            /* 拿不到显示信息时保持默认 */
         }
     }
 
