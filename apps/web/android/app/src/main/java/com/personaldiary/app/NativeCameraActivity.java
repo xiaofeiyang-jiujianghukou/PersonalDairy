@@ -101,8 +101,8 @@ public class NativeCameraActivity extends AppCompatActivity {
     private int seconds = 0;
     /** 重力感应:界面锁竖屏后,靠它判断手机实际怎么握,保证照片方向正确。 */
     private android.view.OrientationEventListener orientationListener;
-    /** 录制进度条(参考微信:一条 1 分钟的进度条,满 1 分钟自动结束)。 */
-    private android.widget.ProgressBar recordProgress;
+    /** 录制进度环(参考微信:围绕快门一圈绿色进度,满 1 分钟自动结束)。 */
+    private RecordRing recordRing;
     private long recordStartAt = 0;
     private static final int MAX_RECORD_MS = 60_000;
 
@@ -248,6 +248,13 @@ public class NativeCameraActivity extends AppCompatActivity {
         innerLp.gravity = Gravity.CENTER;
         shutter.addView(shutterInner, innerLp);
 
+        // 录制进度环:围绕快门的一圈绿色进度(参考微信),平时隐藏
+        recordRing = new RecordRing(this);
+        recordRing.setVisibility(View.GONE);
+        FrameLayout.LayoutParams ringProgressLp = new FrameLayout.LayoutParams(dp(92), dp(92));
+        ringProgressLp.gravity = Gravity.CENTER;
+        shutter.addView(recordRing, ringProgressLp);
+
         LinearLayout.LayoutParams shutterLp = new LinearLayout.LayoutParams(dp(96), dp(96));
         shutterLp.leftMargin = dp(34);
         shutterLp.rightMargin = dp(34);
@@ -258,16 +265,6 @@ public class NativeCameraActivity extends AppCompatActivity {
         flip.setPadding(dp(12), dp(12), dp(12), dp(12));
         flip.setOnClickListener(v -> switchCamera());
         controls.addView(flip, new LinearLayout.LayoutParams(dp(52), dp(52)));
-
-        // 录制进度条(默认隐藏):一条横向进度条,按 1 分钟刻满
-        recordProgress = new android.widget.ProgressBar(
-                this, null, android.R.attr.progressBarStyleHorizontal);
-        recordProgress.setMax(100);
-        recordProgress.setProgress(0);
-        recordProgress.setVisibility(View.GONE);
-        LinearLayout.LayoutParams progLp = new LinearLayout.LayoutParams(dp(240), dp(4));
-        progLp.bottomMargin = dp(14);
-        bottom.addView(recordProgress, progLp);
 
         bottom.addView(controls);
         FrameLayout.LayoutParams bottomLp = new FrameLayout.LayoutParams(
@@ -634,9 +631,9 @@ public class NativeCameraActivity extends AppCompatActivity {
             recordingNow = true;
             seconds = 0;
             recordStartAt = System.currentTimeMillis();
-            if (recordProgress != null) {
-                recordProgress.setProgress(0);
-                recordProgress.setVisibility(View.VISIBLE);
+            if (recordRing != null) {
+                recordRing.setProgress(0f);
+                recordRing.setVisibility(View.VISIBLE);
             }
             startTick();
             setShutterRecording(true);
@@ -650,9 +647,9 @@ public class NativeCameraActivity extends AppCompatActivity {
             recording.stop();
             recording = null;
         }
-        if (recordProgress != null) {
-            recordProgress.setVisibility(View.GONE);
-            recordProgress.setProgress(0);
+        if (recordRing != null) {
+            recordRing.setVisibility(View.GONE);
+            recordRing.setProgress(0f);
         }
     }
 
@@ -672,7 +669,7 @@ public class NativeCameraActivity extends AppCompatActivity {
             d.setColor(Color.WHITE);
         }
         shutterInner.setBackground(d);
-        hintView.setText(on ? ("● 摄像中 " + seconds + "s · 松手结束") : "轻触拍照,长按摄像");
+        hintView.setText(on ? "● 摄像中 · 松手结束" : "轻触拍照,长按摄像");
     }
 
     /**
@@ -687,12 +684,11 @@ public class NativeCameraActivity extends AppCompatActivity {
             public void run() {
                 if (!recordingNow) return;
                 long elapsed = System.currentTimeMillis() - recordStartAt;
-                int sec = (int) (elapsed / 1000);
-                if (sec != seconds) seconds = sec;
-                if (recordProgress != null) {
-                    recordProgress.setProgress((int) Math.min(100, elapsed * 100 / MAX_RECORD_MS));
+                seconds = (int) (elapsed / 1000); // 仅内部计数(界面不显示秒数)
+                if (recordRing != null) {
+                    recordRing.setProgress(Math.min(1f, (float) elapsed / MAX_RECORD_MS));
                 }
-                hintView.setText("● 摄像中 " + seconds + "s / " + (MAX_RECORD_MS / 1000) + "s · 松手结束");
+                hintView.setText("● 摄像中 · 松手结束"); // 不显示秒数:进度看快门那一圈就行
                 if (elapsed >= MAX_RECORD_MS) {
                     stopRecording(); // 满 1 分钟自动结束
                     return;
@@ -707,6 +703,36 @@ public class NativeCameraActivity extends AppCompatActivity {
         if (tickRunnable != null) {
             handler.removeCallbacks(tickRunnable);
             tickRunnable = null;
+        }
+    }
+
+    /** 围绕快门的一圈绿色录制进度(参考微信):0 → 1 绕满一圈。 */
+    private class RecordRing extends View {
+        private float progress = 0f;
+        private final android.graphics.Paint paint =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        RecordRing(android.content.Context ctx) {
+            super(ctx);
+            paint.setStyle(android.graphics.Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(4));
+            paint.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+            paint.setColor(0xFF07C160); // 微信绿
+        }
+
+        void setProgress(float p) {
+            progress = Math.max(0f, Math.min(1f, p));
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(android.graphics.Canvas canvas) {
+            super.onDraw(canvas);
+            if (progress <= 0f) return;
+            float inset = dp(2.5f);
+            android.graphics.RectF box = new android.graphics.RectF(
+                    inset, inset, getWidth() - inset, getHeight() - inset);
+            canvas.drawArc(box, -90f, 360f * progress, false, paint); // 从正上方顺时针
         }
     }
 
