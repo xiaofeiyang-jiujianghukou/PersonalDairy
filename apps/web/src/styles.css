@@ -1729,3 +1729,30 @@ a {
 }
 
 .chevron.open { transform: rotate(90deg); }
+
+/* 终端行里的小按钮(下线) */
+.mine-mini-btn {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mine-mini-btn.danger { color: #c0392b; border-color: rgba(192, 57, 43, 0.35); }
+
+/* 小节底部的文字链接(清理失效终端) */
+.mine-section-foot { padding: 8px 14px 12px; text-align: right; }
+
+.link-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}

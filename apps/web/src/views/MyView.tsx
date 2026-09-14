@@ -119,9 +119,12 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
     return isSelf || d.online || d.count > 0 || Boolean(d.watermark);
   });
   const onlineCount = visiblePeers.filter((d) => d.online).length;
-  const maxCount = visiblePeers.reduce((m, d) => Math.max(m, d.count), 0);
+  const counts = visiblePeers.map((d) => d.count);
+  const minC = counts.length ? Math.min(...counts) : 0;
+  const maxC = counts.length ? Math.max(...counts) : 0;
+  // 摘要回答一个真正关心的问题:各终端是否一致(收敛)
   const termSummary = visiblePeers.length
-    ? `${onlineCount}/${visiblePeers.length} 台在线 · ${maxCount} 条`
+    ? `${onlineCount} 台在线 · ${minC === maxC ? `已一致 ${maxC} 条` : `未一致 ${minC}~${maxC} 条`}`
     : '';
     // 终端管理区块(默认收起,点标题展开)
   const terminalsSection = peers.length > 0 && (
@@ -161,22 +164,24 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
           );
         })}
         {username && (
-        <button
-        className="mine-row as-div"
-        onClick={async () => {
-          if (!window.confirm('清理无数据且长期离线的终端记录?(不会删除任何日记)')) return;
-          try {
-            const r = await api.forgetStaleTerminals(getDeviceId(), true);
-            setNotice(r > 0 ? `已清理 ${r} 条失效终端记录` : '没有需要清理的记录');
-            setPeers(await relayDevices());
-          } catch (e) {
-            alert((e as Error).message);
-          }
-        }}
-        >
-        <span className="mine-row-label">清理失效终端</span>
-        <span className="mine-row-desc">移除无数据且长期离线的记录</span>
-        </button>
+          <div className="mine-section-foot">
+            <button
+              type="button"
+              className="link-btn"
+              onClick={async () => {
+                if (!window.confirm('清理无数据且长期离线的终端记录?(不会删除任何日记)')) return;
+                try {
+                  const r = await api.forgetStaleTerminals(getDeviceId(), true);
+                  setNotice(r > 0 ? `已清理 ${r} 条失效终端记录` : '没有需要清理的记录');
+                  setPeers(await relayDevices());
+                } catch (e) {
+                  alert((e as Error).message);
+                }
+              }}
+            >
+              清理失效终端
+            </button>
+          </div>
         )}
     </div>
   );

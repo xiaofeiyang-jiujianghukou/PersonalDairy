@@ -240,3 +240,30 @@ export async function deviceForget(uid: number, deviceId: string): Promise<void>
   const r = c();
   await r.hdel(regKey(uid), deviceId);
 }
+
+/**
+ * 让某台终端下线(设备丢失/更换时使用)。
+ *
+ * 做两件事:
+ *   ① 从注册表移除,它不再出现在终端列表里、也不参与主端选举;
+ *   ② 记入拒绝名单 rev:{uid},该设备号的 sync 请求一律被拒 —— 即使它手里还留着
+ *      登录令牌,也无法再通过中继收发数据。
+ *
+ * 诚实说明:这台设备本地仍存着已同步到的日记内容,服务端删不掉(我们本来就不保存内容)。
+ * 所以"丢手机"的正确组合是:先在这里下线该终端,再去改密码(同步密钥由密码派生,改密码后
+ * 它对后续新增数据也无能为力)。
+ */
+export async function relayRevoke(uid: number, deviceId: string): Promise<void> {
+  if (!deviceId) return;
+  const r = c();
+  await r.hdel(regKey(uid), deviceId);
+  await r.sadd(`trans:${uid}:revoked`, deviceId);
+  await r.expire(`trans:${uid}:revoked`, 365 * 24 * 3600);
+}
+
+/** 该设备是否已被下线。 */
+export async function relayIsRevoked(uid: number, deviceId: string): Promise<boolean> {
+  if (!deviceId) return false;
+  const r = c();
+  return (await r.sismember(`trans:${uid}:revoked`, deviceId)) === 1;
+}

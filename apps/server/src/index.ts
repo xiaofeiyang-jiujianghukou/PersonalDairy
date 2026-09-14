@@ -56,6 +56,8 @@ import {
   deviceList,
   deviceSeen,
   deviceForget,
+  relayRevoke,
+  relayIsRevoked,
   pickLeader,
   mboxPush,
   mboxPushToOthers,
@@ -592,6 +594,16 @@ app.post('/api/relay/wait', async (req) => {
   return relayWaitOnce(user.id, f, 0);
 });
 
+// ---------- 让指定终端下线(设备丢失时用) ----------
+app.post('/api/relay/revoke', async (req) => {
+  const user = (req as AuthedRequest).user!;
+  const { deviceId } = (req.body ?? {}) as { deviceId?: string };
+  const d = String(deviceId ?? '');
+  if (!d) return { ok: false, error: '缺少设备号' };
+  await relayRevoke(user.id, d);
+  return { ok: true };
+});
+
 // ---------- 清理失效/僵尸终端(无数据且已离线) ----------
 // 排查/自检留下的临时设备号会长期挂在注册表里,既干扰"我的终端"列表,也会参与选举。
 app.post('/api/relay/forget', async (req) => {
@@ -784,6 +796,17 @@ app.addHook('onRequest', async (req, reply) => {
     return reply.code(403).send({ error: '云端模式不存储日记内容,该接口已禁用' });
   }
   if (OPEN_PREFIXES.some((p) => url === p || url.startsWith(`${p}/`))) return;
+
+  // 已被"下线"的终端:拒绝一切中继请求(设备丢失时使用)
+  if (url.startsWith('/api/relay')) {
+    const dev = String(
+      (req.query as { from?: string })?.from ??
+        ((req.body as { from?: string } | null)?.from ?? ''),
+    );
+    if (dev && (await relayIsRevoked((req as AuthedRequest).user!.id, dev))) {
+      return reply.code(403).send({ error: '此终端已被下线' });
+    }
+  }
   const auth = req.headers.authorization;
   const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
   const user = token ? getUserByToken(token) : null;

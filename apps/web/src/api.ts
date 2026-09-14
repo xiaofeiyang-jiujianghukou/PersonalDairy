@@ -224,6 +224,7 @@ const remoteApi = {
   create: (input: EntryCreateInput) => http<Entry>('/api/entries', { method: 'POST', body: JSON.stringify(input) }),
   update: (id: string, input: EntryUpdateInput) => http<Entry>(`/api/entries/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
   forgetStaleTerminals,
+  revokeTerminal,
   remove: (id: string) => http<{ ok: boolean }>(`/api/entries/${id}`, { method: 'DELETE' }),
   search: (q: string) => http<SearchResult[]>(`/api/search?q=${encodeURIComponent(q)}`),
   summaryRead: (month: string) => http<SummaryReadResult>(`/api/summary?month=${month}`),
@@ -244,6 +245,10 @@ const localApi = createLocalApi(getLocalBackend());
  * 之前这里缺了这个方法,点到"清理失效终端"会报
  * "an.forgetStaleTerminals is not a function" —— 实测问题。
  */
+(localApi as unknown as { revokeTerminal: (deviceId: string) => Promise<void> }).revokeTerminal =
+  async () => {
+    /* 本地模式无服务端,忽略 */
+  };
 (localApi as unknown as { forgetStaleTerminals: (keep: string, aggressive?: boolean) => Promise<number> }).forgetStaleTerminals =
   async () => 0;
 
@@ -660,6 +665,13 @@ export async function relaySyncNow(): Promise<{ pushed: number; pulled: number }
  * 只拉取云端消息并合并到本地(不推送)。供"在线常驻"循环调用。
  * 会顺带处理控制消息:对端的"我更新了"→ 按需索取区间;对端的"请补传"→ 推送数据。
  */
+export async function revokeTerminal(deviceId: string): Promise<void> {
+  await http<{ ok: boolean }>('/api/relay/revoke', {
+    method: 'POST',
+    body: JSON.stringify({ deviceId }),
+  });
+}
+
 export async function forgetStaleTerminals(keep: string, aggressive = false): Promise<number> {
   const r = await http<{ count?: number }>('/api/relay/forget', {
     method: 'POST',
