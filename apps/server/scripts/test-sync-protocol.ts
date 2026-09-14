@@ -139,6 +139,8 @@ class Device {
   readonly box: Stored = { entries: new Map(), images: new Map(), chat: new Map() };
   readonly engine: SyncEngine;
   pushedAt = '';
+  /** 同步提示事件(start/done + 条数),用于验证界面上那句"同步成功 N 条"。 */
+  readonly syncEvents: Array<{ phase: 'start' | 'done'; merged?: number }> = [];
   private seq = 0;
 
   constructor(id: string, token: string, extra: Partial<{ requestRetryMs: number }> = {}) {
@@ -158,6 +160,7 @@ class Device {
           this.pushedAt = v;
         },
       },
+      onSyncEvent: (e) => this.syncEvents.push(e),
       log: (m) => console.log(`      ${m}`),
     });
   }
@@ -687,6 +690,28 @@ async function main(): Promise<void> {
   await C2.engine.onLocalWrite();
   await pump([C1, C2], 12, '场景16-反向');
   ok(C1.box.chat.has(q2), '反向同步同样成立(对端聊的会回到本端)');
+
+  // ============ 场景 17:同步状态提示(start / done + 条数) ============
+  console.log('\n[场景 17] 发现水位落后 → 发出"同步中";数据到齐 → 发出"同步成功 N 条"');
+  const token17 = await freshToken();
+  const S17 = new Device('devS17-0000-0000-0000-0000000000033', token17);
+  const T17 = new Device('devT17-0000-0000-0000-0000000000034', token17);
+  await S17.engine.onLogin();
+  await T17.engine.onLogin();
+  await pump([S17, T17], 4, '场景17-准备');
+  const w1 = S17.write('场景17:第 1 条', today, '2026-08-01T00:00:01.000Z');
+  const w2 = S17.write('场景17:第 2 条', today, '2026-08-01T00:00:02.000Z');
+  await S17.engine.onLocalWrite(); // 通知在线端(把新水位/向量报上去并广播增量)
+  await pump([S17], 4, '场景17-写侧');
+  T17.syncEvents.length = 0; // 只看这一轮
+  await T17.engine.onLogin(); // T17 落后 → 应发 start
+  const started = T17.syncEvents.some((e) => e.phase === 'start');
+  ok(started, '发现落后时发出了"同步中"事件');
+  await pump([S17, T17], 14, '场景17');
+  ok(T17.has(w1.id) && T17.has(w2.id), 'T17 拿到了 2 条数据');
+  const done = T17.syncEvents.filter((e) => e.phase === 'done').pop();
+  ok(Boolean(done), '同步结束后发出了 done 事件');
+  ok((done?.merged ?? 0) >= 2, `done 事件带的条数 ≥ 2(实际 ${done?.merged})`);
 
   console.log(`\n同步合并新增(put 且原本不存在)共 ${putLog.length} 条:`);
   for (const l of putLog) console.log(`   ${l}`);

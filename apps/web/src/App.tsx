@@ -8,6 +8,7 @@ import AuthGate from './components/AuthGate';
 import SyncModal from './components/SyncModal';
 import { getToken, isPhoneApp } from './api';
 import { autoSync, startRelayLoop, stopRelayLoop } from './lib/syncAuto';
+import SyncToast from './components/SyncToast';
 
 type View =
   | { kind: 'today' }
@@ -34,6 +35,9 @@ export default function App() {
   if (!authed) return <AuthGate onAuthed={() => setAuthed(true)} />;
 
   return (
+      <>
+        <SyncToast />
+
     <div className="app">
       <header className="topbar">
         <div className="brand">PersonalDiary</div>
@@ -69,6 +73,7 @@ export default function App() {
 
       {showScan && <SyncModal onClose={() => setShowScan(false)} />}
     </div>
+      </>
   );
 }
 

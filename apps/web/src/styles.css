@@ -1326,3 +1326,47 @@ a {
   flex-shrink: 0;
 }
 .mine-avatar-img .img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+
+/* 同步提示:发现落后显示"同步中…",完成后显示"同步成功 N 条",3 秒后自动消失 */
+.sync-toast {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(38, 38, 38, 0.92);
+  color: #fff;
+  font-size: 13px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  animation: sync-toast-in 0.18s ease-out;
+  pointer-events: none;
+}
+
+@keyframes sync-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.sync-toast-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fff;
+  animation: sync-toast-pulse 1s ease-in-out infinite;
+}
+
+@keyframes sync-toast-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}

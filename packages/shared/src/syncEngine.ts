@@ -147,6 +147,12 @@ export interface SyncEngineOptions {
   /** 每页拉取条数。 */
   pageSize?: number;
   /**
+   * 同步状态回调(供界面提示):
+   *   'start' —— 发现自己的水位低于最高水位,开始向对端索取数据;
+   *   'done'  —— 这一轮同步结束,merged 是本轮合并进来的条数。
+   */
+  onSyncEvent?: (e: { phase: 'start' | 'done'; merged?: number }) => void;
+  /**
    * 同一个区间请求的去重窗口(毫秒,默认 60 秒)。
    * 超出窗口后,下一个事件(登录/收到通知/有端加入)会**重新索取** —— 因为
    * need 可能因为"对端当时不在线/请求丢失"而始终没被满足,不能只发一次就永远放弃。
@@ -212,6 +218,8 @@ export class SyncEngine {
   /** 诊断:最近一次同步/错误情况(界面上可直接显示,便于实机排查)。 */
   /** 最近一次随行带出去的对话 id —— 对话变化时即使没有日记增量也要推送。 */
   private lastChatPushed = '';
+  /** 同步会话:发现落后 → 提示"同步中";数据到齐 → 提示"同步成功 N 条"。 */
+  private syncSession: { open: boolean; merged: number; since: number; requestedInDrain: boolean } | null = null;
   private diag = {
     lastSyncAt: '',
     lastError: '',
@@ -324,6 +332,28 @@ export class SyncEngine {
     leader: string;
   } {
     return { ...this.diag, leader: this.leader ?? '' };
+  }
+
+  /** 发现水位落后(要向对端索取)时开启一次"同步中"。 */
+  private openSyncSession(): void {
+    if (this.syncSession?.open) return;
+    this.syncSession = { open: true, merged: 0, since: Date.now(), requestedInDrain: true };
+    this.o.onSyncEvent?.({ phase: 'start' });
+    this.log('同步中…(发现缺口,开始向对端索取)');
+  }
+
+  /** 结束一次同步,并把"本轮合并了多少条"报给界面。 */
+  private closeSyncSession(): void {
+    const s = this.syncSession;
+    if (!s?.open) return;
+    this.syncSession = null;
+    this.o.onSyncEvent?.({ phase: 'done', merged: s.merged });
+    this.log(`同步结束:合并 ${s.merged} 条`);
+  }
+
+  /** 合并计数(条目 + 对话)累加到当前同步会话。 */
+  private addMerged(n: number): void {
+    if (n > 0 && this.syncSession?.open) this.syncSession.merged += n;
   }
 
   private fail(stage: string, e: unknown): void {
@@ -508,6 +538,8 @@ export class SyncEngine {
     const last = this.requested.get(key);
     if (last !== undefined && Date.now() - last < window) return; // 窗口内不重复
     this.requested.set(key, Date.now());
+    this.openSyncSession(); // 发现水位落后 → 界面上提示"同步中"
+    if (this.syncSession) this.syncSession.requestedInDrain = true;
     try {
       await this.o.transport.need({
         deviceId: this.o.deviceId,
@@ -550,6 +582,7 @@ export class SyncEngine {
     const pageSize = this.o.pageSize ?? 50;
     let merged = 0;
     let handled = 0;
+    if (this.syncSession) this.syncSession.requestedInDrain = false;
     for (let guard = 0; guard < 500; guard++) {
       let page: { messages: SyncMessage[]; remaining?: number };
       try {
@@ -573,6 +606,12 @@ export class SyncEngine {
     this.diag.lastMerged = merged;
     this.diag.lastHandled = handled;
     this.diag.lastSyncAt = new Date().toISOString();
+    // 本轮没有新发出索取请求 → 说明等待中的东西已经收干净,可以收尾提示
+    if (this.syncSession?.open && !this.syncSession.requestedInDrain) this.closeSyncSession();
+    // 兜底:对端一直没补传(它可能在后台/离线)时,别让"同步中"永远挂着
+    else if (this.syncSession?.open && Date.now() - this.syncSession.since > 45_000 && merged === 0) {
+      this.closeSyncSession();
+    }
     if (merged > 0) {
       this.o.onChange?.();
       // 合并后立刻上报新水位/向量/条目数,避免服务端设备表里是合并前的过期快照
@@ -633,11 +672,13 @@ export class SyncEngine {
     }>(m.payload);
     if (!peer) return 0; // 解不开(旧密钥/别人的)→ 跳过,不阻塞
     const chatMerged = await this.mergeChat(peer.chat);
+    this.addMerged(chatMerged);
     if (chatMerged > 0) this.o.onChange?.(); // 对话有新内容 → 通知界面刷新
     for (const img of peer.images ?? []) {
       if (img?.dataUrl) await this.o.store.importMedia([img]);
     }
     const merged = await this.mergeEntries(peer.entries ?? []);
+    this.addMerged(merged);
     if (merged && this.lastNotified) {
       const wm = await this.watermark();
       if (wm > this.lastNotified) this.lastNotified = wm; // 合并后水位前进,避免再广播一次

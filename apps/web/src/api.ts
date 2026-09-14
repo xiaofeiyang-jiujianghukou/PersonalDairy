@@ -12,6 +12,7 @@ import { decryptObject, deriveSyncKey, encryptObject } from '@diary/shared/syncC
 import { emitDataChanged } from './lib/dataEvents';
 import { getDeviceId } from './lib/device';
 import { chatAll, chatPut } from './lib/chatStore';
+import { handleEngineSyncEvent } from './lib/syncStatus';
 import { SyncEngine, type SyncStore, type SyncTransport, type DiaryEntry as EngineEntry } from '@diary/shared/syncEngine';
 import { IdbBackend, createLocalApi, listImageIds, type LocalBackend } from './lib/localStore';
 import { exportMediaFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
@@ -596,6 +597,7 @@ export function getSyncEngine(): SyncEngine {
       setPushedAt: (v) => setLastSyncAt(v),
     },
     onChange: () => emitDataChanged(),
+    onSyncEvent: (e) => handleEngineSyncEvent(e),
     log: (m) => {
       if (localStorage.getItem('diary.debugSync') === '1') console.log(m);
     },
