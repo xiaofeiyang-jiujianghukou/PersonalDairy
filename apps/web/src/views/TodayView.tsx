@@ -14,7 +14,16 @@ export default function TodayView({ onOpenDay }: { onOpenDay: (date: string) => 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setEntries(await api.listByDate(date));
+      const list = await api.listByDate(date);
+      /*
+       * 「今天」列表**倒序**(最新写的在最上面):
+       * 输入框在上面,刚写完的一条自然出现在紧挨输入框的位置,不用往下翻。
+       * 注意:从日历点进来的那一天走的是 DayView,那边保持**正序**(按时间顺序回顾),
+       * 两种顺序刻意不同 —— 这里是"接着写",那里是"回头看"。
+       */
+      setEntries(
+        list.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)),
+      );
     } catch (e) {
       alert((e as Error).message);
     } finally {

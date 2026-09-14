@@ -41,6 +41,7 @@ export default function DayView({
 
   async function reload() {
     try {
+      // 从日历点进来的日期:**保持正序**(按时间先后回顾一整天),不做倒序
       setEntries(await api.listByDate(current));
     } catch (e) {
       alert((e as Error).message);
