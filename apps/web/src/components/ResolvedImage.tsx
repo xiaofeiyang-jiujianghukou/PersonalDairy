@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { resolveMediaRef } from '../lib/image';
 import { isTauri } from '../lib/net';
 import CanvasVideo from './CanvasVideo';
+import ImageViewer from './ImageViewer';
 
 /**
  * 桌面端(Linux/WebKitGTK)在部分显卡上渲染 H.264 会花屏 —— 文件本身没问题
@@ -14,10 +15,8 @@ export default function ResolvedImage({ src, alt }: { src?: string; alt?: string
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const isVideo = !!src && src.startsWith('diary-video:');
-  const [opening, setOpening] = useState(false);
-  const [opened, setOpened] = useState(false);
+  const [zoomed, setZoomed] = useState(false);
 
-  // 桌面端用系统播放器打开视频(绕开 WebKit 的花屏问题)
   // 桌面端(WebKitGTK)视频层渲染坏 → 用 canvas 自绘播放;手机上仍是原生 <video>
   const useCanvasPlayer = isVideo && isTauri();
 
@@ -53,6 +52,10 @@ export default function ResolvedImage({ src, alt }: { src?: string; alt?: string
   return isVideo ? (
     <video className="img video" src={url} controls playsInline />
   ) : (
-    <img className="img" src={url} alt={alt || ''} />
+    <>
+      {/* 点击放大铺满屏幕,再点回到原位 */}
+      <img className="img zoomable" src={url} alt={alt || ''} onClick={() => setZoomed(true)} />
+      {zoomed && <ImageViewer src={url} alt={alt} onClose={() => setZoomed(false)} />}
+    </>
   );
 }

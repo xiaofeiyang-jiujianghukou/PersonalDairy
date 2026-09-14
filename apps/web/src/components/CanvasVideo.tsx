@@ -14,11 +14,13 @@ export default function CanvasVideo({ src }: { src: string }) {
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [failed, setFailed] = useState(false);
+  const [full, setFull] = useState(false); // 铺满屏幕(同一个 canvas 放大,不重载)
 
   // 逐帧把视频画到 canvas
   useEffect(() => {
     let raf = 0;
     let stopped = false;
+    let lastProgressAt = 0;
     const draw = (): void => {
       if (stopped) return;
       const v = videoRef.current;
@@ -38,8 +40,16 @@ export default function CanvasVideo({ src }: { src: string }) {
             /* 偶尔取不到帧就跳过这一帧 */
           }
         }
-        if (v.duration) setProgress(v.currentTime / v.duration);
-        setPlaying(!v.paused);
+        /*
+         * 注意:**绝不能在每帧里 setState** —— 一秒 60 次 React 重渲染会把界面拖垮
+         * (实测症状:重新打开视频后画面卡住、像静止帧)。进度改为每 ~200ms 更新一次,
+         * 播放/暂停状态由 video 的事件驱动。
+         */
+        const now = performance.now();
+        if (v.duration && now - lastProgressAt > 200) {
+          lastProgressAt = now;
+          setProgress(v.currentTime / v.duration);
+        }
       }
       raf = requestAnimationFrame(draw);
     };
@@ -50,6 +60,16 @@ export default function CanvasVideo({ src }: { src: string }) {
     };
   }, []);
 
+  // Esc 退出全屏
+  useEffect(() => {
+    if (!full) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setFull(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [full]);
+
   function toggle(): void {
     const v = videoRef.current;
     if (!v) return;
@@ -58,7 +78,7 @@ export default function CanvasVideo({ src }: { src: string }) {
   }
 
   return (
-    <div className="canvas-video" onClick={toggle}>
+    <div className={`canvas-video${full ? ' full' : ''}`} onClick={toggle}>
       <canvas ref={canvasRef} className="canvas-video-canvas" />
       <video
         ref={videoRef}
@@ -67,9 +87,26 @@ export default function CanvasVideo({ src }: { src: string }) {
         preload="auto"
         style={{ display: 'none' }}
         onError={() => setFailed(true)}
-        onEnded={() => setPlaying(false)}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => {
+          setPlaying(false);
+          setProgress(0);
+        }}
       />
       {failed && <div className="canvas-video-error">这个视频无法播放</div>}
+      {/* 铺满屏幕 / 回到原位 */}
+      <button
+        type="button"
+        className="canvas-video-full-btn"
+        title={full ? '退出全屏' : '铺满屏幕'}
+        onClick={(e) => {
+          e.stopPropagation();
+          setFull((v) => !v);
+        }}
+      >
+        {full ? '⤡' : '⛶'}
+      </button>
       {!playing && !failed && <span className="canvas-video-play">▶</span>}
       <div className="canvas-video-bar">
         <div className="canvas-video-bar-fill" style={{ width: `${Math.round(progress * 100)}%` }} />
