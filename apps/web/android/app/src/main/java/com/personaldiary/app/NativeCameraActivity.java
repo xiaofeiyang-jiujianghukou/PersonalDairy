@@ -107,6 +107,8 @@ public class NativeCameraActivity extends AppCompatActivity {
     /** 上次点预览的时间:用于识别双击(双击 = 直接切换前后摄像头)。 */
     private long lastPreviewTapAt = 0;
     private static final int MAX_RECORD_MS = 60_000;
+    /** 少于这个时长就不算"录像":丢弃视频,改用照片(与微信一致)。 */
+    private static final long MIN_VIDEO_MS = 1000L;
 
     private int dp(float v) {
         return Math.round(TypedValue.applyDimension(
@@ -635,8 +637,24 @@ public class NativeCameraActivity extends AppCompatActivity {
                     recordingNow = false;
                     stopTick();
                     setShutterRecording(false);
-                    if (f.getError() == VideoRecordEvent.Finalize.ERROR_NONE) finishWith(file, "video/mp4");
-                    else finishWithError("录像失败(error=" + f.getError() + ")");
+                    if (f.getError() != VideoRecordEvent.Finalize.ERROR_NONE) {
+                        finishWithError("录像失败(error=" + f.getError() + ")");
+                        return;
+                    }
+                    // 参考微信:不足 1 秒的"录像"不保留视频,直接改用照片
+                    long ms = 0;
+                    try {
+                        ms = f.getRecordingStats().getRecordedDurationNanos() / 1_000_000L;
+                    } catch (Exception ignored) {
+                        /* 拿不到时长就按视频保留 */
+                    }
+                    if (ms > 0 && ms < MIN_VIDEO_MS) {
+                        file.delete(); // 丢掉这段几乎没有内容的视频
+                        toast("按住时间太短,已改为拍照");
+                        takePhoto();
+                        return;
+                    }
+                    finishWith(file, "video/mp4");
                 }
             });
             recordingNow = true;
