@@ -21,6 +21,7 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
    * 错误码 / readyState / networkState 直接显示出来,一眼定位,不再猜。
    */
   const [diag, setDiag] = useState('');
+  const lockRef = useRef(true);
   const [full, setFull] = useState(false); // 铺满屏幕(同一个 canvas 放大,不重载)
 
   /*
@@ -39,10 +40,16 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
      * 而 WebKit 显示竖屏 MP4 时会忽略旋转信息,于是画面横过来(实测就是这个现象)。
      * 正确做法:保留画布尺寸,等拿到真实宽高后再更新。
      */
+    /*
+     * 换视频时只"解锁尺寸",**不清零**(清零会让 canvas 变 0 高,露出下面的原生视频层,
+     * 而 WebKit 渲染竖屏 MP4 时忽略旋转信息 → 画面横过来)。
+     * 解锁后由 draw 循环在拿到新视频的宽高时重新锁定。
+     */
+    lockRef.current = false;
     const c0 = canvasRef.current;
     if (c0 && c0.width === 0) {
-      c0.width = 720; // 给一个竖向兜底,避免出现 0 尺寸
-      c0.height = 1280;
+      c0.width = 1920; // 横向兜底:与"图1"的观感一致
+      c0.height = 912;
     }
     void (async () => {
       try {
@@ -94,21 +101,29 @@ export default function CanvasVideo({ blobUrl }: { blobUrl: string }) {
     let raf = 0;
     let stopped = false;
     let lastProgressAt = 0;
+    let sizeLocked = lockRef.current;
     const draw = (): void => {
       if (stopped) return;
       const v = videoRef.current;
       const c = canvasRef.current;
       if (v && c) {
-        const w = v.videoWidth || 720;
-        const h = v.videoHeight || 1280;
-        if (c.width !== w || c.height !== h) {
-          c.width = w;
-          c.height = h;
+        /*
+         * 画布尺寸**只锁一次**(第一次拿到有效宽高时),之后永不改变。
+         *
+         * 为什么:WebKit 汇报的 videoWidth/Height 会**中途变化** —— 一开始是未旋转的
+         * 原始值(1920×912),随后才修正为 912×1920。跟着它变,画面就会从"正"变成"转过去"
+         * (实测:第一次播放正常、第二次播放画面转 90°)。锁住第一次的值即可始终稳定。
+         */
+        if (!sizeLocked && v.videoWidth && v.videoHeight) {
+          c.width = v.videoWidth;
+          c.height = v.videoHeight;
+          sizeLocked = true;
+          lockRef.current = true;
         }
         const ctx = c.getContext('2d');
         if (ctx && v.readyState >= 2) {
           try {
-            ctx.drawImage(v, 0, 0, w, h);
+            ctx.drawImage(v, 0, 0, c.width, c.height);
           } catch {
             /* 偶尔取不到帧就跳过这一帧 */
           }
