@@ -474,6 +474,21 @@ app.get('/api/relay/ws', { websocket: true }, (socket, req) => {
   }
 
   let lastAppPing = Date.now();
+  /*
+   * 双向心跳:
+   *   · 协议层 ping(下面的 ws.ping)只让中间设备别回收空闲连接,客户端 JS 看不到;
+   *   · 这里额外发一条 JSON 心跳,**客户端能看到** —— 于是它能判断
+   *     "我已经 45 秒没收到任何东西了",从而发现"连接悄悄死了"并主动重连。
+   * 半开连接(网络路径失效但没触发 close)在移动网络下很常见,没有这条就永远发现不了。
+   */
+  const jsonBeat = setInterval(() => {
+    try {
+      socket.send(JSON.stringify({ type: 'ping', at: Date.now() }));
+    } catch {
+      /* 连接已坏,交给下面的清理逻辑 */
+    }
+  }, 25 * 1000);
+
   // 协议层 ping:只是为了让中间设备(NAT/代理)不回收空闲连接,不作为存活依据
   const ping = setInterval(() => {
     try {
@@ -503,6 +518,7 @@ app.get('/api/relay/ws', { websocket: true }, (socket, req) => {
   });
   const cleanup = (): void => {
     clearInterval(ping);
+    clearInterval(jsonBeat);
     clearInterval(aliveCheck);
     const mm = wsClients.get(uid);
     if (mm && mm.get(deviceId) === (socket as unknown as WsLike)) {

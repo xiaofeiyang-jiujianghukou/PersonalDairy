@@ -43,6 +43,9 @@ export class RelaySocket {
   private retry = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private keepalive: ReturnType<typeof setInterval> | null = null;
+  /** 看门狗:上次收到服务端任何消息的时间(用于发现"连接悄悄死了")。 */
+  private lastInbound = 0;
+  private watchdog: ReturnType<typeof setInterval> | null = null;
   private openedAt = 0;
 
   constructor(o: RelaySocketOptions) {
@@ -96,6 +99,24 @@ export class RelaySocket {
    */
   private startKeepalive(ws: WebSocket): void {
     this.stopKeepalive();
+    this.lastInbound = Date.now();
+    /*
+     * 半开连接看门狗。
+     * 网络路径悄悄失效时(移动网络尤其常见:NAT 超时、切基站、信号瞬断),
+     * 客户端收不到任何 close 事件,会一直以为自己连着 —— "断线自动重连"于是永远
+     * 不会触发(实测就卡在这里)。服务端每 25 秒发一条 JSON 心跳,这里只要 45 秒
+     * 没收到任何东西,就主动断开,交给既有的重连逻辑。
+     */
+    this.watchdog = setInterval(() => {
+      if (this.lastInbound && Date.now() - this.lastInbound > 45000) {
+        this.o.onStatus?.(this.connected ? 'open' : 'idle');
+        try {
+          this.ws?.close();
+        } catch {
+          /* 忽略 */
+        }
+      }
+    }, 10000);
     this.keepalive = setInterval(() => {
       try {
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
@@ -106,6 +127,11 @@ export class RelaySocket {
   }
 
   private stopKeepalive(): void {
+    if (this.watchdog) {
+      clearInterval(this.watchdog);
+      this.watchdog = null;
+    }
+    this.lastInbound = 0;
     if (this.keepalive) {
       clearInterval(this.keepalive);
       this.keepalive = null;
@@ -175,6 +201,7 @@ export class RelaySocket {
       this.o.onOpen?.(); // 重连成功后立刻对账一次
     };
     ws.onmessage = (ev) => {
+      this.lastInbound = Date.now(); // 有消息就说明链路是活的
       try {
         const msg = JSON.parse(String(ev.data)) as { type?: string };
         if (msg?.type === 'wake') this.o.onWake();
