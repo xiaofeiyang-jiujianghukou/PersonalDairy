@@ -16,6 +16,21 @@ export default function CanvasVideo({ src }: { src: string }) {
   const [failed, setFailed] = useState(false);
   const [full, setFull] = useState(false); // 铺满屏幕(同一个 canvas 放大,不重载)
 
+  // 打开后先静默预载一帧,让 canvas 立刻有画面(不自动出声)
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onLoaded = (): void => {
+      try {
+        v.currentTime = 0.05;
+      } catch {
+        /* 忽略 */
+      }
+    };
+    v.addEventListener('loadedmetadata', onLoaded);
+    return () => v.removeEventListener('loadedmetadata', onLoaded);
+  }, []);
+
   // 逐帧把视频画到 canvas
   useEffect(() => {
     let raf = 0;
@@ -73,8 +88,22 @@ export default function CanvasVideo({ src }: { src: string }) {
   function toggle(): void {
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) void v.play().catch(() => setFailed(true));
-    else v.pause();
+    if (!v.paused) {
+      v.pause();
+      return;
+    }
+    /*
+     * play() 的 reject 不一定代表不能播:重载/被新的 load 打断都会抛 AbortError。
+     * 这时**不能**显示"无法播放"(实测误报)。只在真的播不动时才标记失败,并先重试一次。
+     */
+    void v.play().catch(() => {
+      setTimeout(() => {
+        const vv = videoRef.current;
+        if (!vv) return;
+        vv.load();
+        void vv.play().catch(() => setFailed(true));
+      }, 120);
+    });
   }
 
   return (
@@ -85,7 +114,19 @@ export default function CanvasVideo({ src }: { src: string }) {
         src={src}
         playsInline
         preload="auto"
-        style={{ display: 'none' }}
+        /*
+         * 注意:不要用 display:none 藏它 —— WebKit 可能因此停止为"不可见"的元素解码,
+         * 结果 canvas 拿不到帧(实测踩过)。改成 1px 透明放在左下角,肉眼看不到但仍在解码。
+         */
+        style={{
+          position: 'absolute',
+          left: 0,
+          bottom: 0,
+          width: 1,
+          height: 1,
+          opacity: 0.01,
+          pointerEvents: 'none',
+        }}
         onError={() => setFailed(true)}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
