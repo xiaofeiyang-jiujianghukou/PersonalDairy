@@ -804,21 +804,34 @@ app.addHook('onRequest', async (req, reply) => {
   }
   if (OPEN_PREFIXES.some((p) => url === p || url.startsWith(`${p}/`))) return;
 
-  // 已被"下线"的终端:拒绝一切中继请求(设备丢失时使用)
-  if (url.startsWith('/api/relay')) {
-    const dev = String(
-      (req.query as { from?: string })?.from ??
-        ((req.body as { from?: string } | null)?.from ?? ''),
-    );
-    if (dev && (await relayIsRevoked((req as AuthedRequest).user!.id, dev))) {
-      return reply.code(403).send({ error: '此终端已被下线' });
-    }
-  }
+  // 先鉴权并把 user 挂到 req 上 —— 下面的"下线终端"检查要用 user.id,
+  // 不能像之前那样在赋值之前就去读 (req as AuthedRequest).user!.id,那会抛
+  // "Cannot read properties of undefined (reading 'id')"(实测:所有带 from query 的
+  // GET /api/relay/mbox 都因此 500,导致取件永远失败、两端从此分叉)。
   const auth = req.headers.authorization;
   const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
   const user = token ? getUserByToken(token) : null;
   if (!user) return reply.code(401).send({ error: '未登录或会话已过期' });
   (req as AuthedRequest).user = { id: user.id, username: user.username };
+});
+
+// 已被"下线"的终端:拒绝一切中继请求(设备丢失时使用)。
+// 必须放在 preHandler(而非 onRequest):onRequest 阶段 POST 的 body 还没解析,
+// 拿不到 from → 检查对 POST 静默失效(实测"下线终端"对 hello/notify/push 等根本不生效)。
+// preHandler 在 body 解析之后运行,能同时覆盖 GET(query)与 POST(body)两种取 from 的方式。
+// /api/relay/ws 走一次性票据(无 req.user),已在 OPEN_PREFIXES 放行,这里 user 为空时兜底跳过。
+app.addHook('preHandler', async (req, reply) => {
+  const url = (req.url ?? '').split('?')[0] ?? '';
+  if (!url.startsWith('/api/relay') || url === '/api/relay/ws') return;
+  const user = (req as AuthedRequest).user;
+  if (!user) return; // 未鉴权(onRequest 已 401)
+  const dev = String(
+    (req.query as { from?: string })?.from ??
+      ((req.body as { from?: string } | null)?.from ?? ''),
+  );
+  if (dev && (await relayIsRevoked(user.id, dev))) {
+    return reply.code(403).send({ error: '此终端已被下线' });
+  }
 });
 
 // ---------- 日记 ----------
