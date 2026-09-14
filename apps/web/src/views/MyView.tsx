@@ -152,7 +152,14 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
           return isSelf || d.online || d.count > 0 || Boolean(d.watermark);
         })
         .slice()
-        .sort((a, b) => Number(b.online) - Number(a.online) || a.deviceId.localeCompare(b.deviceId))
+        // 本机永远排第一,其余按"在线优先 + 设备号"排序
+            .sort((a, b) => {
+              const self = getDeviceId();
+              const aSelf = a.deviceId === self ? 1 : 0;
+              const bSelf = b.deviceId === self ? 1 : 0;
+              if (aSelf !== bSelf) return bSelf - aSelf;
+              return Number(b.online) - Number(a.online) || a.deviceId.localeCompare(b.deviceId);
+            })
         .map((d) => {
           const isSelf = d.deviceId === getDeviceId();
           return (
