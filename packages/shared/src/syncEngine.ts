@@ -495,14 +495,15 @@ export class SyncEngine {
    */
   private async reconcileWith(devices: PeerDevice[], mine: WatermarkVector): Promise<number> {
     /*
-     * 只跟**此刻在线**的对端对账。
-     * 离线的端根本没法应答(手机在后台会被系统冻结、桌面端可能已退出),向它索取只会白等,
-     * 最后还弹出"同步成功 0 条数据"这种误导提示 —— 实测问题(设备表里残留的探针设备尤其明显)。
-     * 离线端的内容会在它上线时通过 notify/hello 主动送过来,不需要我去问它。
+     * 向**所有**对端对账,包括此刻离线的。
+     *
+     * 为什么不能只问在线的:离线的端(手机息屏/进后台,JS 被系统冻结)恰恰是**持有我缺的那段数据**
+     * 的一方;而服务端会把请求排进它的信箱,等它醒来(你打开 App)自然处理并补传。
+     * 反过来"只问在线端"会让我永远不去问那台睡着的手机 —— 实测就是这样卡住的。
+     * 代价是可能向真正已退场的设备发一次请求(排进它的信箱),无害。
      */
     const peers = devices
       .filter((d) => d.deviceId !== this.o.deviceId)
-      .filter((d) => d.online !== false)
       .sort((a, b) => {
         const al = a.deviceId === this.leader ? 1 : 0;
         const bl = b.deviceId === this.leader ? 1 : 0;

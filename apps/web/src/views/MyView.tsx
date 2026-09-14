@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { authApi, clearToken, exportUrl, relaySyncNow, setLastSyncAt, setRelayCursor } from '../api';
+import { api, authApi, clearToken, exportUrl, relayDevices, relaySyncNow, setLastSyncAt, setRelayCursor } from '../api';
 import { getSyncEngine } from '../api';
 import { getSyncChannel } from '../lib/syncAuto';
 import SettingsModal from '../components/SettingsModal';
@@ -21,6 +21,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
   const [localCount, setLocalCount] = useState<number | null>(null);
   const [localWatermark, setLocalWatermark] = useState('');
   const [diag, setDiag] = useState<{ lastSyncAt: string; lastError: string; lastErrorAt: string; lastHandled: number } | null>(null);
+  const [peers, setPeers] = useState<Array<{ deviceId: string; online: boolean; count: number; watermark: string }>>([]);
   useEffect(() => {
     let alive = true;
     const refresh = async (): Promise<void> => {
@@ -32,6 +33,11 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
         setLocalCount(n);
         setLocalWatermark(wm);
         setDiag(eng.diagnostics());
+        try {
+          setPeers(await relayDevices());
+        } catch {
+          /* 拿不到就不显示 */
+        }
       } catch {
         /* 未登录/未配对时忽略 */
       }

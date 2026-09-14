@@ -1387,3 +1387,33 @@ a {
   0%, 100% { opacity: 0.35; }
   50% { opacity: 1; }
 }
+
+/* 「我的」页里的设备状态(在线/离线 + 条目数),用途:让"是不是真在线"一眼可见 */
+.mine-section {
+  margin: 14px 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.mine-section-title {
+  margin: 0;
+  padding: 10px 14px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.mine-badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-soft);
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.mine-badge.online {
+  color: #07c160;
+  background: rgba(7, 193, 96, 0.12);
+}

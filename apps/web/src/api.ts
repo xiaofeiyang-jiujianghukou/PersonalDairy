@@ -580,9 +580,32 @@ function makeEngineStore(): SyncStore {
 
 let syncEngine: SyncEngine | null = null;
 /** 取得(单例)同步引擎。 */
+/**
+ * 在线心跳(每 30 秒):只告诉服务端"我还在",不拉数据、不推送。
+ *
+ * 为什么需要它:WebSocket 的心跳靠 JS 自己跑定时器 —— 安卓在 WebView 不可见/息屏时会
+ * 冻结定时器,或者 WS 悄悄断了而客户端还不知道,这时服务端会把一台好好的设备判成离线
+ * (实测踩过)。这条走普通 HTTP,与 WS 状态无关,保证在线判定不被 WS 拖累。
+ */
+let presenceTimer: number | null = null;
+export function startPresenceBeat(): void {
+  if (presenceTimer !== null) return;
+  const beat = (): void => {
+    void http<{ ok: boolean }>('/api/relay/presence', {
+      method: 'POST',
+      body: JSON.stringify({ from: getDeviceId() }),
+    }).catch(() => {
+      /* 网络不好就算,下一轮再报 */
+    });
+  };
+  beat();
+  presenceTimer = window.setInterval(beat, 30_000);
+}
+
 export function getSyncEngine(): SyncEngine {
   if (syncEngine) return syncEngine;
   const deviceId = getDeviceId();
+  startPresenceBeat(); // 在线心跳(独立于 WebSocket)
   syncEngine = new SyncEngine({
     deviceId,
     transport: makeEngineTransport(deviceId),
@@ -618,6 +641,20 @@ export async function relaySyncNow(): Promise<{ pushed: number; pulled: number }
  * 只拉取云端消息并合并到本地(不推送)。供"在线常驻"循环调用。
  * 会顺带处理控制消息:对端的"我更新了"→ 按需索取区间;对端的"请补传"→ 推送数据。
  */
+export async function relayDevices(): Promise<
+  Array<{ deviceId: string; online: boolean; count: number; watermark: string }>
+> {
+  const r = await http<{ devices?: Array<{ deviceId: string; online?: boolean; count?: number; watermark?: string }> }>(
+    '/api/relay/devices',
+  );
+  return (r.devices ?? []).map((d) => ({
+    deviceId: String(d.deviceId),
+    online: Boolean(d.online),
+    count: Number(d.count ?? 0),
+    watermark: String(d.watermark ?? ''),
+  }));
+}
+
 export async function relayPullOnly(): Promise<{ pulled: number }> {
   const { merged } = await getSyncEngine().drain();
   return { pulled: merged };

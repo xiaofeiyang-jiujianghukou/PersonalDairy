@@ -575,6 +575,15 @@ app.post('/api/relay/wait', async (req) => {
   return relayWaitOnce(user.id, f, 0);
 });
 
+// ---------- 在线心跳(独立于 WebSocket):只刷新"我还在",不动水位 ----------
+app.post('/api/relay/presence', async (req) => {
+  const user = (req as AuthedRequest).user!;
+  const { from } = (req.body ?? {}) as { from?: string };
+  const f = typeof from === 'string' ? from : '';
+  if (f) await deviceSeen(user.id, f);
+  return { ok: true, at: Date.now() };
+});
+
 // ---------- 信箱:新协议的收件方式(无游标,取走即消费) ----------
 app.get('/api/relay/mbox', async (req) => {
   const user = (req as AuthedRequest).user!;
