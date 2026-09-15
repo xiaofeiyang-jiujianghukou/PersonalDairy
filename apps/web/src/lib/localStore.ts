@@ -6,6 +6,7 @@ import type {
   SearchResult,
   SummaryReadResult,
 } from '@diary/shared';
+import { logSync } from './syncLog';
 
 /** 本地存储后端抽象:IndexedDB(手机)或内存(测试/无痕)。 */
 export interface LocalBackend {
@@ -145,6 +146,7 @@ export function createLocalApi(backend: LocalBackend) {
         deletedAt: null,
       };
       await withWrite((all) => [...all, e]);
+      logSync('write', `新建日记 ${e.date} · ${e.id.slice(0, 8)}`);
       return e;
     },
     async update(id: string, input: EntryUpdateInput): Promise<Entry | null> {
@@ -157,6 +159,7 @@ export function createLocalApi(backend: LocalBackend) {
           return updated;
         }),
       );
+      if (updated) logSync('write', `修改日记 ${id.slice(0, 8)}`);
       return updated;
     },
     async remove(id: string): Promise<{ ok: boolean }> {
@@ -169,6 +172,7 @@ export function createLocalApi(backend: LocalBackend) {
           return { ...e, deletedAt: ts, deviceId: DEVICE(), updatedAt: ts };
         }),
       );
+      if (ok) logSync('write', `删除日记 ${id.slice(0, 8)}`);
       return { ok };
     },
     async search(q: string): Promise<SearchResult[]> {

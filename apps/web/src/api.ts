@@ -13,10 +13,11 @@ import { emitDataChanged } from './lib/dataEvents';
 import { getDeviceId } from './lib/device';
 import { chatAll, chatPut } from './lib/chatStore';
 import { handleEngineSyncEvent } from './lib/syncStatus';
-import { SyncEngine, type SyncStore, type SyncTransport, type DiaryEntry as EngineEntry } from '@diary/shared/syncEngine';
+import { SyncEngine, type SyncStore, type SyncTransport, type DiaryEntry as EngineEntry, type SyncLogCategory } from '@diary/shared/syncEngine';
 import { IdbBackend, createLocalApi, listImageIds, type LocalBackend } from './lib/localStore';
 import { exportMediaFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
 import { getFetch } from './lib/net';
+import { logSync } from './lib/syncLog';
 
 // 端点烘焙原则:生产构建用 VITE_API_BASE(固定云服务域,非用户配置);
 // 测试阶段可用 localStorage 覆盖(即"服务端地址"设置)。
@@ -701,17 +702,10 @@ export function getSyncEngine(): SyncEngine {
     },
     onChange: () => emitDataChanged(),
     onSyncEvent: (e) => handleEngineSyncEvent(e),
-    log: (m: string) => {
-      if (localStorage.getItem('diary.debugSync') === '1') console.log(m);
-      // 全程留痕到本地:排查"某台设备为何没收到"时,直接读这份日志即可
-      try {
-        const k = 'diary.synclog';
-        const arr = JSON.parse(localStorage.getItem(k) ?? '[]') as string[];
-        arr.push(`${new Date().toISOString().slice(11, 23)} ${m}`);
-        localStorage.setItem(k, JSON.stringify(arr.slice(-400)));
-      } catch {
-        /* 忽略 */
-      }
+    log: (m: string, cat?: SyncLogCategory) => {
+      if (localStorage.getItem('diary.debugSync') === '1') console.log(`[${cat ?? 'sync'}] ${m}`);
+      // 全程留痕到本地(结构化,带类别):排查"某台设备为何没收到"时,直接看「日志管理」即可
+      logSync(cat ?? 'sync', m);
     },
   });
   return syncEngine;

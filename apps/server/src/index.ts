@@ -585,6 +585,7 @@ app.post('/api/relay/push', async (req, reply) => {
   const envelope = JSON.stringify({ kind: k, from, payload, to: target });
   const delivered = target ? ((await mboxPush(user.id, target, envelope)) ? 1 : 0) : await mboxPushToOthers(user.id, from, envelope);
   wakeRelayWaiters(user.id, from, target); // 实时唤醒(本进程内存 + WebSocket)
+  req.log.info({ from, to: target || '(广播)', kind: k, delivered, payloadBytes: payload.length }, '中继投递 push');
   return { ok: true, delivered };
 });
 
@@ -608,6 +609,7 @@ app.post('/api/relay/revoke', async (req) => {
   const d = String(deviceId ?? '');
   if (!d) return { ok: false, error: '缺少设备号' };
   await relayRevoke(user.id, d);
+  req.log.info({ deviceId: d }, '终端下线 revoke');
   return { ok: true };
 });
 
@@ -660,7 +662,9 @@ app.get('/api/relay/mbox', async (req) => {
       }
     })
     .filter((x): x is { seq: number; kind: string; from: string; to: string; payload: string } => Boolean(x));
-  return { messages, remaining: await mboxLen(user.id, from) };
+  const remaining = await mboxLen(user.id, from);
+  req.log.info({ from, taken: messages.length, remaining }, '信箱取件 mbox');
+  return { messages, remaining };
 });
 
 // ---------- 同步控制面:设备注册 / 水位线协商 / 主端选举 ----------
@@ -691,6 +695,7 @@ app.post('/api/relay/hello', async (req, reply) => {
   };
   if (typeof from !== 'string' || !from) return reply.code(400).send({ error: '缺少 from' });
   const devices = await deviceRegister(user.id, from, String(watermark ?? ''), true, vector ?? {}, Number(count) || 0);
+  req.log.info({ from, watermark: String(watermark ?? ''), count: Number(count) || 0, vectorSources: Object.keys(vector ?? {}).length }, '设备握手 hello');
   // 事件驱动:有新端(或久未出现的端)上线 → 向其它端广播一条"有端加入",带上它的水位/向量/条目数。
   // 其它端收到就立刻比对、索取缺口 → 多端同时上线的"注册竞态"不靠定时器也能收敛。
   const self = devices.find((d) => d.deviceId === from);
@@ -740,8 +745,9 @@ app.post('/api/relay/notify', async (req, reply) => {
   if (typeof from !== 'string' || !from) return reply.code(400).send({ error: '缺少 from' });
   await deviceTouch(user.id, from, String(watermark ?? ''), vector ?? {}, Number(count) || 0);
   const body = typeof payload === 'string' && payload ? payload : JSON.stringify({ plain: { watermark } });
-  await mboxPushToOthers(user.id, from, JSON.stringify({ kind: 'notify', from, payload: body, to: '' }));
+  const delivered = await mboxPushToOthers(user.id, from, JSON.stringify({ kind: 'notify', from, payload: body, to: '' }));
   wakeRelayWaiters(user.id, from, '');
+  req.log.info({ from, watermark: String(watermark ?? ''), count: Number(count) || 0, delivered }, '设备通知 notify');
   return { ok: true };
 });
 
@@ -775,6 +781,7 @@ app.post('/api/relay/need', async (req, reply) => {
         });
   const delivered = await mboxPush(user.id, to, JSON.stringify({ kind: 'need', from, payload: needBody, to }));
   wakeRelayWaiters(user.id, from, to);
+  req.log.info({ from, to, origin: String(origin ?? ''), fromWatermark: String(fromWatermark ?? ''), toWatermark: String(toWatermark ?? ''), reachable, delivered }, '区间索取 need');
   return { ok: true, reachable, delivered };
 });
 

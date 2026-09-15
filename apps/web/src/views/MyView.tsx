@@ -4,6 +4,7 @@ import { getSyncEngine } from '../api';
 import { getSyncChannel } from '../lib/syncAuto';
 import { getDeviceId } from '../lib/device';
 import SettingsModal from '../components/SettingsModal';
+import LogViewerModal from '../components/LogViewerModal';
 import CompanionModal, { type CompanionMode } from '../components/CompanionModal';
 import MentorReportModal from '../components/MentorReportModal';
 import ResolvedImage from '../components/ResolvedImage';
@@ -16,6 +17,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
   const [chatMode, setChatMode] = useState<CompanionMode | null>(null);
   const [showMentor, setShowMentor] = useState(false);
   const [showTerminals, setShowTerminals] = useState(false); // 我的终端默认收起
+  const [showLogs, setShowLogs] = useState(false); // 日志管理
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   // 本机同步自查状态(全部读本地,不发网络请求):通道 / 本机条目数 / 水位 / 上次同步
@@ -110,6 +112,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
       desc: busy ? '同步中…' : '数据对不上时点这里(重推全部 + 从头全量拉取)',
       onClick: () => void fullResync(),
     },
+    { label: '日志管理', desc: '写日记 / 通知 / 水位 / 区间 / 错误', onClick: () => setShowLogs(true) },
     { label: '退出登录', desc: '', onClick: logout, danger: true },
   ];
 
@@ -252,6 +255,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
       </p>
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {showLogs && <LogViewerModal onClose={() => setShowLogs(false)} />}
       {chatMode && <CompanionModal mode={chatMode} onClose={() => setChatMode(null)} />}
       {showMentor && <MentorReportModal onClose={() => setShowMentor(false)} />}
     </div>

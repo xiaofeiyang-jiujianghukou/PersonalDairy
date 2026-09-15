@@ -62,6 +62,16 @@ export interface PeerDevice {
 
 export type SyncKind = 'data' | 'notify' | 'need';
 
+/** 结构化日志类别(宿主据此在「日志管理」里过滤展示)。 */
+export type SyncLogCategory =
+  | 'write' // 写日记(本机新建/修改/删除)
+  | 'notify' // 发通知:告诉在线端「我更新了」
+  | 'recvNotify' // 收通知:收到对端「我更新了」
+  | 'watermark' // 获取水位:握手交换各端水位/向量
+  | 'range' // 水位区间:发起索取 / 补传 / 收到区间数据
+  | 'sync' // 通用同步(广播增量、合并、会话状态)
+  | 'error'; // 错误
+
 /** 水位向量:来源设备 → 我拥有的该来源最新更新时间点。 */
 export type WatermarkVector = Record<string, string>;
 
@@ -138,8 +148,8 @@ export interface SyncEngineOptions {
   };
   /** 合并了对端条目后回调(用于刷新界面)。 */
   onChange?: () => void;
-  /** 诊断日志。 */
-  log?: (msg: string) => void;
+  /** 诊断日志(带类别,供结构化存储与界面过滤)。 */
+  log?: (msg: string, cat?: SyncLogCategory) => void;
   /** 单条推送的目标字节上限(超过则分批)。 */
   chunkBytes?: number;
   /** 每次推送附带多少条最近的 AI 对话(靠 id 去重,自带自愈能力)。 */
@@ -262,8 +272,8 @@ export class SyncEngine {
     return fresh.length;
   }
 
-  private log(msg: string): void {
-    this.o.log?.(`[sync:${this.o.deviceId.slice(0, 8)}] ${msg}`);
+  private log(msg: string, cat: SyncLogCategory = 'sync'): void {
+    this.o.log?.(`[sync:${this.o.deviceId.slice(0, 8)}] ${msg}`, cat);
   }
 
   /** 本端水位线 = 本地全部条目 updatedAt 的最大值(删除也是更新,故含墓碑)。 */
@@ -365,7 +375,7 @@ export class SyncEngine {
       .join(' ← ');
     this.diag.lastError = `${stage}: ${(e as Error)?.message ?? String(e)}`;
     this.diag.lastErrorAt = new Date().toISOString();
-    this.log(`✖ ${this.diag.lastError}${where ? `  【${where}】` : ''}`);
+    this.log(`✖ ${this.diag.lastError}${where ? `  【${where}】` : ''}`, 'error');
   }
 
   /**
@@ -412,10 +422,10 @@ export class SyncEngine {
         vector: await this.watermarkVector(),
         count: await this.count(),
       });
-      this.log(`notify 水位=${wm}`);
+      this.log(`notify 水位=${wm}`, 'notify');
     } catch (e) {
       this.lastNotified = ''; // 失败允许重试
-      this.log(`notify 失败:${(e as Error).message}`);
+      this.log(`notify 失败:${(e as Error).message}`, 'error');
     }
   }
 
@@ -489,6 +499,7 @@ export class SyncEngine {
     }
     this.log(
       `hello 水位=${wm || '(空)'} 向量=${JSON.stringify(vector)} 主端=${this.leader?.slice(0, 8) ?? '无'}`,
+      'watermark',
     );
     const requested = await this.reconcileWith(devices, vector);
     await this.drain(); // 顺带把云端已有消息拉净(兼容历史广播数据)
@@ -562,7 +573,7 @@ export class SyncEngine {
         fromWatermark: fromWm,
         toWatermark: toWm,
       });
-      this.log(`need ${to.slice(0, 8)} origin=${(origin || '(全部)').slice(0, 8)} 区间(${fromWm || '空'}, ${toWm}]`);
+      this.log(`need ${to.slice(0, 8)} origin=${(origin || '(全部)').slice(0, 8)} 区间(${fromWm || '空'}, ${toWm}]`, 'range');
     } catch (e) {
       this.requested.delete(key);
       this.fail('发起索取 need', e);
@@ -612,7 +623,7 @@ export class SyncEngine {
         })();
         const keys = e && typeof e === 'object' ? Object.keys(e as object).join(',') : typeof e;
         this.fail('取件 drainMailbox', e);
-        this.log(`  ↳ 抛出物类型: ${typeof e} | 字段: [${keys}] | 原始值: ${raw?.slice(0, 300)}`);
+        this.log(`  ↳ 抛出物类型: ${typeof e} | 字段: [${keys}] | 原始值: ${raw?.slice(0, 300)}`, 'error');
         break;
       }
       const msgs = page.messages ?? [];
@@ -660,6 +671,10 @@ export class SyncEngine {
       }>(m.payload);
       const mine = await this.watermarkVector();
       const theirVector = info?.vector ?? {};
+      this.log(
+        `收到通知 from=${m.from.slice(0, 8)} 水位=${info?.watermark ?? '(空)'} 向量来源=${Object.keys(theirVector).length} 个 条目数=${info?.count ?? '?'}`,
+        'recvNotify',
+      );
       let asked = 0;
       for (const [origin, their] of Object.entries(theirVector)) {
         if (!their) continue;
@@ -708,6 +723,7 @@ export class SyncEngine {
     }
     const merged = await this.mergeEntries(peer.entries ?? []);
     this.addMerged(merged);
+    if (merged) this.log(`收到区间数据 ${merged} 条(来自 ${m.from.slice(0, 8)})`, 'range');
     if (merged && this.lastNotified) {
       const wm = await this.watermark();
       if (wm > this.lastNotified) this.lastNotified = wm; // 合并后水位前进,避免再广播一次
@@ -751,7 +767,7 @@ export class SyncEngine {
       })
       .sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : 1));
     if (!picked.length) {
-      this.log(`serve ${requester.slice(0, 8)} 区间无数据`);
+      this.log(`serve ${requester.slice(0, 8)} 区间无数据`, 'range');
       return 0;
     }
     const localImageIds = await this.o.store.localMediaIds();
@@ -782,6 +798,7 @@ export class SyncEngine {
     await flush();
     this.log(
       `serve ${requester.slice(0, 8)} origin=${(origin || '(全部)').slice(0, 8)} 区间(${fromWm || '空'}, ${toWm}] 推送 ${sent} 条`,
+      'range',
     );
     return sent;
   }
