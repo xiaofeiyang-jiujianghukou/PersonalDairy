@@ -1,24 +1,31 @@
 /**
  * 多端同步协议引擎(与宿主解耦:浏览器 / Node / 测试都能用)。
  *
+ * 核心原则:**在线即同步,离线不同步**。
+ *   服务端不存任何东西 —— 信封只在两台**同时在线**的设备之间由服务端 WebSocket 直投。
+ *   离线端错过的东西,靠它下次上线时的「水位向量对账」补齐(协议本身自愈)。
+ *
  * 协议(按需求方的方案):
  *   水位线 watermark = 本端已知的"最新更新时间点"(本地全部条目 updatedAt 的最大值,ISO 字符串可比大小)。
+ *   水位向量 vector  = { 来源 deviceId: 我拥有的该来源最新 updatedAt } —— 只有向量才能发现
+ *                      "我缺了别人更早写的那批数据"(单标量水位会把旧数据当成对方已有)。
  *
- *   场景 1 —— 任一端写入:
- *     写入端 notify(xxxa) 广播 → 各在线端比较自身 xxxb:
+ *   场景 1 —— 任一端写入(对端在线):
+ *     写入端 notify(xxxa) 直投 → 各在线端比较自身 xxxb:
  *       若 xxxb < xxxa → 定向 need(from=xxxb, to=xxxa) 给写入端;
- *       写入端收到 need → 取本地 (xxxb, xxxa] 区间条目,分小批加密定向推送到云端;
- *       请求端再从云端按游标拉取、解密、LWW 合并。
+ *       写入端收到 need → 取本地 (xxxb, xxxa] 区间条目,分小批加密**直投**回去;
+ *       请求端收到即解密、LWW 合并(见 receive())。
+ *     对端不在线 → 直投送达 0,不做任何暂存;等下次双方在线时对账补齐。
  *
  *   场景 2 —— 新端登录(已有端在线):
- *     /hello 上报本端水位 → 云端返回各端水位 + 主端;
- *     新端若落后 → 向水位更高的端(优先主端)发 need 请求区间补传。
+ *     /hello 上报本端水位 → 服务端返回各端水位 + 主端;
+ *     新端若落后 → 向水位更高的**在线**端(优先主端)发 need 请求区间补传。
  *
- *   场景 3 —— 多端同时上线(彼此水位不一):
- *     每端 /hello 交换水位 → 服务端选举主端(水位最新优先,相同则登录最早);
- *     各端统一向主端(或任何水位更高者)请求区间,最终向主端收敛。
+ *   场景 3 —— 新端上线时:
+ *     服务端向其它在线端广播一条「有端加入」(带上新端的水位/向量) →
+ *     它们反向比对,发现自己缺什么就主动来索取。
  *
- * 引擎只处理"协议";加解密、存储、HTTP 都由宿主注入(见 SyncTransport / SyncStore / SyncCipher)。
+ * 引擎只处理"协议";加解密、存储、HTTP/WS 都由宿主注入(见 SyncTransport / SyncStore / SyncCipher)。
  */
 
 export interface DiaryEntry {
@@ -75,10 +82,13 @@ export type SyncLogCategory =
 /** 水位向量:来源设备 → 我拥有的该来源最新更新时间点。 */
 export type WatermarkVector = Record<string, string>;
 
-export interface SyncMessage {
-  id: number;
-  from: string;
+/**
+ * 服务端通过 WebSocket 直投过来的一个信封。
+ * 结构就是过去信箱里取出来的那一条 —— 只是现在不再经过任何存储。
+ */
+export interface SyncEnvelope {
   kind: SyncKind;
+  from: string;
   to: string;
   payload: string;
 }
@@ -107,13 +117,6 @@ export interface SyncTransport {
   }): Promise<void>;
   /** 定向推送一批加密数据给 to。 */
   push(p: { deviceId: string; to: string; payload: string }): Promise<void>;
-  /**
-   * 取走自己的信箱(取走即消费,协议里没有"位置/游标")。
-   * 服务端只把"给这台设备的"东西投进来:补传的数据、发给它的请求、广播类信号。
-   */
-  drainMailbox(p: { deviceId: string; limit: number }): Promise<{ messages: SyncMessage[]; remaining?: number }>;
-  /** 长轮询兜底:只问"有没有"(不含任何位置信息)。 */
-  wait(p: { deviceId: string }): Promise<{ hasNew: boolean }>;
 }
 
 export interface SyncStore {
@@ -141,7 +144,7 @@ export interface SyncEngineOptions {
   state: {
     /**
      * 广播水位(上次"兼容广播"推到哪里),用于只推增量。
-     * 注意:这里**没有游标** —— 新协议按时间区间协商,收件靠"每设备信箱"(取走即消费)。
+     * 注意:这里**没有游标** —— 新协议按时间区间协商,收件靠**服务端 WebSocket 直投**。
      */
     getPushedAt?(): string;
     setPushedAt?(v: string): void;
@@ -154,8 +157,6 @@ export interface SyncEngineOptions {
   chunkBytes?: number;
   /** 每次推送附带多少条最近的 AI 对话(靠 id 去重,自带自愈能力)。 */
   chatCarry?: number;
-  /** 每页拉取条数。 */
-  pageSize?: number;
   /**
    * 同步状态回调(供界面提示):
    *   'start' —— 发现自己的水位低于最高水位,开始向对端索取数据;
@@ -229,7 +230,7 @@ export class SyncEngine {
   /** 最近一次随行带出去的对话 id —— 对话变化时即使没有日记增量也要推送。 */
   private lastChatPushed = '';
   /** 同步会话:发现落后 → 提示"同步中";数据到齐 → 提示"同步成功 N 条"。 */
-  private syncSession: { open: boolean; merged: number; since: number; requestedInDrain: boolean } | null = null;
+  private syncSession: { open: boolean; merged: number; since: number } | null = null;
   private diag = {
     lastSyncAt: '',
     lastError: '',
@@ -347,9 +348,19 @@ export class SyncEngine {
   /** 发现水位落后(要向对端索取)时开启一次"同步中"。 */
   private openSyncSession(): void {
     if (this.syncSession?.open) return;
-    this.syncSession = { open: true, merged: 0, since: Date.now(), requestedInDrain: true };
+    this.syncSession = { open: true, merged: 0, since: Date.now() };
     this.o.onSyncEvent?.({ phase: 'start' });
     this.log('同步中…(发现缺口,开始向对端索取)');
+    /*
+     * 直投模式下没有"取件收尾"这个时机(数据是被推过来的),所以自带一个兜底:
+     * 45 秒还没补齐就收起提示 —— 对端可能已经离线/被冻结,别让界面永远挂着"同步中"。
+     */
+    if (typeof setTimeout === 'function') {
+      const openedAt = this.syncSession.since;
+      setTimeout(() => {
+        if (this.syncSession?.open && this.syncSession.since === openedAt) this.closeSyncSession();
+      }, 45_000);
+    }
   }
 
   /** 结束一次同步,并把"本轮合并了多少条"报给界面。 */
@@ -502,7 +513,6 @@ export class SyncEngine {
       'watermark',
     );
     const requested = await this.reconcileWith(devices, vector);
-    await this.drain(); // 顺带把云端已有消息拉净(兼容历史广播数据)
     return { requested, leader: this.leader };
   }
 
@@ -512,15 +522,16 @@ export class SyncEngine {
    */
   private async reconcileWith(devices: PeerDevice[], mine: WatermarkVector): Promise<number> {
     /*
-     * 向**所有**对端对账,包括此刻离线的。
+     * 只向**在线**对端索取。
      *
-     * 为什么不能只问在线的:离线的端(手机息屏/进后台,JS 被系统冻结)恰恰是**持有我缺的那段数据**
-     * 的一方;而服务端会把请求排进它的信箱,等它醒来(你打开 App)自然处理并补传。
-     * 反过来"只问在线端"会让我永远不去问那台睡着的手机 —— 实测就是这样卡住的。
-     * 代价是可能向真正已退场的设备发一次请求(排进它的信箱),无害。
+     * 旧版(信箱)会把请求排进离线端的信箱,等它醒来再处理,所以要"问所有端(含离线)"。
+     * 现在数据走 WS 直投:离线端根本收不到请求,发给它只会 delivered=0,白发。
+     *
+     * 缺口不会因此漏掉 —— 它上线时会 hello,服务端随即向其它在线端广播「有端加入」,
+     * 那些端收到就反向比对自己的向量、主动来索取。也就是"谁在线谁先补,最终仍收敛"。
      */
     const peers = devices
-      .filter((d) => d.deviceId !== this.o.deviceId)
+      .filter((d) => d.deviceId !== this.o.deviceId && d.online)
       .sort((a, b) => {
         const al = a.deviceId === this.leader ? 1 : 0;
         const bl = b.deviceId === this.leader ? 1 : 0;
@@ -564,7 +575,6 @@ export class SyncEngine {
     if (last !== undefined && Date.now() - last < window) return; // 窗口内不重复
     this.requested.set(key, Date.now());
     this.openSyncSession(); // 发现水位落后 → 界面上提示"同步中"
-    if (this.syncSession) this.syncSession.requestedInDrain = true;
     try {
       await this.o.transport.need({
         deviceId: this.o.deviceId,
@@ -597,70 +607,40 @@ export class SyncEngine {
   }
 
   // ---------------- 拉取并处理控制/数据消息 ----------------
-  /** 把云端消息拉到本地(分页),处理 data/notify/need。返回合并条数。 */
   /**
-   * 收件:反复取走自己信箱里的消息并处理,直到信箱为空。
-   * 没有游标 —— 取走即消费;服务端只投"给这台设备的"消息,所以不存在
-   * "页里全是别人的消息导致卡住"这种问题。
+   * 收到服务端**直投**过来的一个信封(WebSocket 的 mail 帧)并处理它。
+   *
+   * 这就是过去 drain 时从信箱里取出来处理的那一条 —— 但现在没有信箱、
+   * 没有分页、没有取件轮询:数据只在**两台同时在线**的设备之间直投。
+   * 离线端收不到任何东西,靠它下次上线时的「水位向量对账」补齐缺口。
    */
-  async drain(): Promise<{ merged: number }> {
-    const pageSize = this.o.pageSize ?? 50;
+  async receive(env: SyncEnvelope): Promise<number> {
     let merged = 0;
-    let handled = 0;
-    if (this.syncSession) this.syncSession.requestedInDrain = false;
-    for (let guard = 0; guard < 500; guard++) {
-      let page: { messages: SyncMessage[]; remaining?: number };
-      try {
-        page = await this.o.transport.drainMailbox({ deviceId: this.o.deviceId, limit: pageSize });
-      } catch (e) {
-        // 把"被抛出来的到底是什么"完整记下来 —— 之前只记 message,看不出是哪一层抛的
-        const raw = (() => {
-          try {
-            return JSON.stringify(e);
-          } catch {
-            return String(e);
-          }
-        })();
-        const keys = e && typeof e === 'object' ? Object.keys(e as object).join(',') : typeof e;
-        this.fail('取件 drainMailbox', e);
-        this.log(`  ↳ 抛出物类型: ${typeof e} | 字段: [${keys}] | 原始值: ${raw?.slice(0, 300)}`, 'error');
-        break;
-      }
-      const msgs = page.messages ?? [];
-      if (!msgs.length) break;
-      handled += msgs.length;
-      for (const m of msgs) {
-        try {
-          merged += await this.handle(m);
-        } catch (e) {
-          this.fail(`处理消息(${m.kind})`, e);
-        }
-      }
-      if (msgs.length < pageSize) break; // 信箱已取空
+    try {
+      merged = await this.handle(env);
+    } catch (e) {
+      this.fail(`处理直投消息(${env.kind})`, e);
+      return 0;
     }
     this.diag.lastMerged = merged;
-    this.diag.lastHandled = handled;
+    this.diag.lastHandled += 1;
     this.diag.lastSyncAt = new Date().toISOString();
-    // 本轮没有新发出索取请求 → 说明等待中的东西已经收干净,可以收尾提示
-    if (this.syncSession?.open && !this.syncSession.requestedInDrain) this.closeSyncSession();
-    // 兜底:对端一直没补传(它可能在后台/离线)时,别让"同步中"永远挂着
-    else if (this.syncSession?.open && Date.now() - this.syncSession.since > 45_000 && merged === 0) {
-      this.closeSyncSession();
-    }
     if (merged > 0) {
+      this.addMerged(merged);
       /*
-       * 只要这一轮真的合并进了数据,就报给界面 —— 包括"对端主动推给我"的情况
-       * (那种情况不会开启同步会话,以前界面上完全没有提示,用户以为没同步)。
+       * 合并进了数据 → 报给界面。注意也包括"对端主动推给我"的情况:
+       * 那种情况不会开启同步会话,所以这里单独发一次 done 事件。
        */
-      if (!this.syncSession?.open) this.o.onSyncEvent?.({ phase: 'done', merged });
+      if (this.syncSession?.open) this.closeSyncSession();
+      else this.o.onSyncEvent?.({ phase: 'done', merged });
       this.o.onChange?.();
       // 合并后立刻上报新水位/向量/条目数,避免服务端设备表里是合并前的过期快照
       void this.heartbeat();
     }
-    return { merged };
+    return merged;
   }
 
-  private async handle(m: SyncMessage): Promise<number> {
+  private async handle(m: SyncEnvelope): Promise<number> {
     if (m.kind === 'notify') {
       // 对端说"我更新到 xxxa"(或"我上线了"):按**来源**逐条比对我的水位向量,
       // 只要它有的我没有(或比我新)就定向索取该来源的区间;条目数更多则额外要一次全量。
@@ -836,17 +816,18 @@ export class SyncEngine {
 
   // ---------------- 在线常驻循环 ----------------
   /**
-   * 一次完整同步:握手(按需)→ 拉净云端 → 广播水位。
-   * 长轮询循环由宿主驱动(见 runLoop)。
+   * 一次完整对账:握手 → 按水位向量索取缺口 → 广播本端水位。
+   *
+   * 注意:return 里的 pulled **恒为 0** —— 数据是被对端**直投**过来的(异步到达,
+   * 由 receive() 处理并触发界面刷新),不再有"这一步就能拉回来多少条"的概念。
    */
   async runOnce(): Promise<{ pushed: number; pulled: number }> {
     if (this.busy) return { pushed: 0, pulled: 0 };
     this.busy = true;
     try {
       await this.onLogin();
-      const { merged } = await this.drain();
       const pushed = await this.serveNote(); // 兜底:本地有新数据就通知 + 广播增量
-      return { pushed, pulled: merged };
+      return { pushed, pulled: 0 };
     } finally {
       this.busy = false;
     }
@@ -861,22 +842,5 @@ export class SyncEngine {
       return 1;
     }
     return 0;
-  }
-
-  /** 长轮询等待 → 有变化就拉取处理;返回是否处理了消息。 */
-  /**
-   * 长轮询兜底:等一个"有东西了"的信号(WS 不可用时才用),然后取件。
-   * 注意这里不传任何位置 —— 只问"有没有",然后直接取信箱。
-   */
-  async waitAndPull(): Promise<boolean> {
-    let hasNew = false;
-    try {
-      const r = await this.o.transport.wait({ deviceId: this.o.deviceId });
-      hasNew = Boolean(r?.hasNew);
-    } catch {
-      return false;
-    }
-    const { merged } = await this.drain();
-    return merged > 0 || hasNew;
   }
 }

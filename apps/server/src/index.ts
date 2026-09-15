@@ -51,6 +51,7 @@ import {
 } from './db.js';
 import {
   initRelayRedis,
+  cleanupLegacyKeys,
   deviceRegister,
   deviceTouch,
   deviceList,
@@ -59,10 +60,6 @@ import {
   relayRevoke,
   relayIsRevoked,
   pickLeader,
-  mboxPush,
-  mboxPushToOthers,
-  mboxDrain,
-  mboxLen,
   type DeviceInfo,
   type RelayKind,
 } from './relayRedis.js';
@@ -86,6 +83,11 @@ import { decryptObject, encryptObject, generateSyncKey } from '@diary/shared/syn
 const config = loadConfig();
 initDb(config.dbPath);
 initRelayRedis(config.redisUrl);
+// 启动时清理历史版本留下的死 key(events / seq / offset / devices / mbox)。
+// 只删确定无用的,绝不碰当前在用的 trans:{uid}:reg。
+void cleanupLegacyKeys().then((n) => {
+  if (n > 0) console.log(`[relay] 已清理 ${n} 个历史遗留 key(旧版消息日志/信箱),释放 Redis 内存`);
+});
 
 const app = Fastify({ logger: true, bodyLimit: 64 * 1024 * 1024 }); // 64MB,容纳含图片的同步负载
 
@@ -364,32 +366,12 @@ app.post('/api/auth/scan-confirm', { preHandler: requireAuth }, async (req, repl
   return { ok: true };
 });
 
-// ---------- P2:跨网络密文中继(Redis Stream 消息中间件,按游标分发;只存加密载荷) ----------
-const RELAY_WAIT_MS = 20 * 1000;
+// ---------- P2:跨网络密文中继(WS 直投;服务端零存储) ----------
+// 数据只在两台**同时在线**的设备的 WebSocket 之间直接转发,不写任何存储。
+// 离线端收不到任何东西 —— 按需求方的定义「在线即同步,离线不同步」;
+// 它下次上线时靠「水位向量对账」把缺口补齐(协议本身是自愈的)。
 
-// 实时唤醒:内存等待表。数据的"有序日志/游标/全消费删除"都在 Redis Stream;
-// 这里只负责"本进程内"快速唤醒等待中的在线设备(单实例部署,不占阻塞连接)。
-interface RelayWaiter {
-  userId: number;
-  from: string;
-  after: number;
-  finish: (hasNew: boolean) => void;
-}
-const relayWaiters = new Map<number, Set<RelayWaiter>>();
-
-function wakeRelayWaiters(userId: number, fromDevice: string, toDevice = ''): void {
-  wakeSockets(userId, fromDevice, toDevice); // WebSocket 主通道(即时)
-  const set = relayWaiters.get(userId);
-  if (!set) return;
-  for (const w of Array.from(set)) {
-    // 新消息来自别人 → 能立刻拉到,唤醒;来自自己则不动(避免自我唤醒的空拉)
-    if (fromDevice === w.from) continue;
-    if (toDevice && toDevice !== w.from) continue; // 定向消息只唤醒目标端
-    w.finish(true);
-  }
-}
-
-// ---------- WebSocket 即时唤醒通道 ----------
+// ---------- WebSocket 通道:既是在线判据,也是数据通道 ----------
 // 设计要点:
 //   · 浏览器/WebView 的 WebSocket 不能带 Authorization 头 → 先用 Bearer 换"一次性短时票据",
 //     再以 ?ticket= 建立连接(票据 60 秒过期、用后即焚、绑定账号与设备),避免 token 出现在 URL/日志里。
@@ -423,18 +405,60 @@ const WS_PING_MS = 30 * 1000;
  */
 const WS_APP_PING_TIMEOUT_MS = Number(process.env.WS_APP_PING_TIMEOUT_MS ?? 40 * 1000);
 
-function wakeSockets(uid: number, fromDevice: string, toDevice: string): void {
+/** 单帧上限(字符数)。超了就分片,避免一个几十 MB 的大帧把两端内存顶爆。 */
+const FRAME_CHUNK_CHARS = 256 * 1024;
+
+/**
+ * 把一个信封发给某个 socket。
+ * 小信封一帧发完;大信封(带图片/视频的区间数据)切成若干帧,客户端重组后再解密合并。
+ * 分片只发生在传输层,业务层(信封/加密/合并)完全无感。
+ */
+function sendFramed(sock: WsLike, envelope: unknown): void {
+  const env = JSON.stringify(envelope);
+  if (env.length <= FRAME_CHUNK_CHARS) {
+    sock.send(JSON.stringify({ type: 'mail', envelope }));
+    return;
+  }
+  const id = randomUUID().slice(0, 8);
+  const total = Math.ceil(env.length / FRAME_CHUNK_CHARS);
+  for (let seq = 0; seq < total; seq++) {
+    sock.send(
+      JSON.stringify({
+        type: 'mail',
+        chunk: { id, seq, total, data: env.slice(seq * FRAME_CHUNK_CHARS, (seq + 1) * FRAME_CHUNK_CHARS) },
+      }),
+    );
+  }
+}
+
+/** 定向投递给某台设备。false = 对方不在线(不做任何暂存,直接放弃)。 */
+function deliverToDevice(uid: number, deviceId: string, envelope: unknown): boolean {
+  if (!deviceId) return false;
+  const sock = wsClients.get(uid)?.get(deviceId);
+  if (!sock) return false; // 离线 → 不同步
+  try {
+    sendFramed(sock, envelope);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 广播给该账号**除 exclude 之外、且当前在线**的所有设备;返回送达台数。 */
+function deliverToOthers(uid: number, exclude: string, envelope: unknown): number {
   const m = wsClients.get(uid);
-  if (!m || !m.size) return;
+  if (!m || !m.size) return 0;
+  let n = 0;
   for (const [deviceId, sock] of m) {
-    if (deviceId === fromDevice) continue; // 自己推的不叫醒自己
-    if (toDevice && toDevice !== deviceId) continue; // 定向消息只叫醒目标端
+    if (deviceId === exclude) continue;
     try {
-      sock.send(JSON.stringify({ type: 'wake', from: fromDevice }));
+      sendFramed(sock, envelope);
+      n++;
     } catch {
       /* 单个连接异常不影响其它连接 */
     }
   }
+  return n;
 }
 
 app.post('/api/relay/ws-ticket', { preHandler: requireAuth }, async (req) => {
@@ -540,33 +564,6 @@ app.get('/api/relay/ws', { websocket: true }, (socket, req) => {
   socket.on('error', cleanup);
 });
 
-function relayWaitOnce(userId: number, from: string, after: number): Promise<{ hasNew: boolean }> {
-  return new Promise((resolve) => {
-    let done = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const finish = (hasNew: boolean): void => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      const set = relayWaiters.get(userId);
-      if (set) {
-        set.delete(w);
-        if (!set.size) relayWaiters.delete(userId);
-      }
-      resolve({ hasNew });
-    };
-    timer = setTimeout(() => finish(false), RELAY_WAIT_MS);
-    const w: RelayWaiter = { userId, from, after, finish };
-    let set = relayWaiters.get(userId);
-    if (!set) {
-      set = new Set();
-      relayWaiters.set(userId, set);
-    }
-    set.add(w);
-    // 不监听 req.raw 'close'(收完请求体后即触发,并非真实断连);断开的客户端最多等 RELAY_WAIT_MS 后被清理。
-  });
-}
-
 app.post('/api/relay/push', async (req, reply) => {
   const user = (req as AuthedRequest).user!;
   const { from, payload, kind, to } = (req.body ?? {}) as {
@@ -580,26 +577,16 @@ app.post('/api/relay/push', async (req, reply) => {
   }
   const k: RelayKind = kind === 'notify' || kind === 'need' ? kind : 'data';
   const target = typeof to === 'string' ? to : '';
-  // 服务端不存储:直接把消息投进收件设备的信箱(取走即删)。
-  // 离线端不投 —— 它回来时按水位向量索取即可,无需服务端为它攒数据。
-  const envelope = JSON.stringify({ kind: k, from, payload, to: target });
-  const delivered = target ? ((await mboxPush(user.id, target, envelope)) ? 1 : 0) : await mboxPushToOthers(user.id, from, envelope);
-  wakeRelayWaiters(user.id, from, target); // 实时唤醒(本进程内存 + WebSocket)
-  req.log.info({ from, to: target || '(广播)', kind: k, delivered, payloadBytes: payload.length }, '中继投递 push');
+  // 服务端**零存储**:直接把信封转发给此刻在线的目标设备(WebSocket 直投)。
+  // 目标不在线 → delivered=0,不做任何暂存;它下次上线会按水位向量对账补齐。
+  const envelope = { kind: k, from, payload, to: target };
+  const delivered = target
+    ? deliverToDevice(user.id, target, envelope)
+      ? 1
+      : 0
+    : deliverToOthers(user.id, from, envelope);
+  req.log.info({ from, to: target || '(广播)', kind: k, delivered, payloadBytes: payload.length }, '中继直投 push');
   return { ok: true, delivered };
-});
-
-// 长轮询即时通知:等"有没有新消息"。先查"已有新消息"→立即返回;否则挂到内存等待表,被 push 唤醒或超时。
-app.post('/api/relay/wait', async (req) => {
-  const user = (req as AuthedRequest).user!;
-  const { from, after } = (req.body ?? {}) as { from?: string; after?: number };
-  const f = typeof from === 'string' ? from : '';
-  // 长轮询请求本身就是在线上报:客户端每 ≤20 秒就会重新挂一次 → 在线状态始终准确,
-  // 且**不需要额外的定时心跳**。必须在挂起之前刷新(挂起期间不算"刚出现")。
-  if (f) await deviceSeen(user.id, f);
-  // 只问"我的信箱里有没有东西" —— 协议里没有任何位置概念
-  if ((await mboxLen(user.id, f)) > 0) return { hasNew: true };
-  return relayWaitOnce(user.id, f, 0);
 });
 
 // ---------- 让指定终端下线(设备丢失时用) ----------
@@ -644,43 +631,27 @@ app.post('/api/relay/presence', async (req) => {
   return { ok: true, at: Date.now() };
 });
 
-// ---------- 信箱:新协议的收件方式(无游标,取走即消费) ----------
-app.get('/api/relay/mbox', async (req) => {
-  const user = (req as AuthedRequest).user!;
-  const from = String((req.query as { from?: string }).from ?? '');
-  const limit = Math.max(1, Math.min(Number((req.query as { limit?: string }).limit) || 50, 200));
-  if (!from) return { messages: [] };
-  await deviceSeen(user.id, from); // 取件即"我还在"
-  const raw = await mboxDrain(user.id, from, limit);
-  const messages = raw
-    .map((x, i) => {
-      try {
-        const o = JSON.parse(x) as { kind?: string; from?: string; payload?: string; to?: string };
-        return { seq: i + 1, kind: o.kind ?? 'data', from: String(o.from ?? ''), to: String(o.to ?? ''), payload: String(o.payload ?? '') };
-      } catch {
-        return null;
-      }
-    })
-    .filter((x): x is { seq: number; kind: string; from: string; to: string; payload: string } => Boolean(x));
-  const remaining = await mboxLen(user.id, from);
-  req.log.info({ from, taken: messages.length, remaining }, '信箱取件 mbox');
-  return { messages, remaining };
-});
-
 // ---------- 同步控制面:设备注册 / 水位线协商 / 主端选举 ----------
 // 设计(按用户方案):
-//   1) 任一端写入 → notify(带上自己最新水位 xxxa)广播给在线端;
+//   1) 任一端写入 → notify(带上自己最新水位 xxxa)**直投**给在线端;
 //      对端比较自身水位 xxxb:若落后 → 向该端发 need(from=xxxb,to=xxxa) 定向请求;
-//      被请求端把 (xxxb, xxxa] 区间的数据分小批定向推到云端;请求端再从云端拉取合并。
-//   2) 新端登录 → /hello 拿到全部端的水位与主端:落后则向水位更高的端(优先主端)发 need。
-//   3) 多端同时上线 → 每端 /hello 交换水位 → 选举主端(水位最新优先,其次登录最早),
-//      各端统一向主端(或其水位更高者)补齐。
-const ONLINE_MS = 90 * 1000;
+//      被请求端把 (xxxb, xxxa] 区间的数据分小批**直投**回来。全程不落任何存储。
+//   2) 新端登录 → /hello 拿到全部端的水位与主端:落后则向水位更高的在线端(优先主端)发 need。
+//   3) 新端上线时,服务端还向其它在线端广播一条"有端加入" —— 它们据此反向比对、索取缺口。
+//   4) 离线端不参与:它上线时会重新 hello,靠水位向量把这段缺口补齐。
 
-function withLeader(devices: DeviceInfo[]): { leader: string | null; devices: DeviceInfo[] } {
+/**
+ * 设备表 + 主端。
+ *
+ * online 以**是否真的持有 WebSocket 连接**为准 —— 直投模式下,"能不能送达"精确等于
+ * "有没有连接"。这比用 lastSeen 推断更准:手机被冻结时 lastSeen 可能还很新,
+ * 但服务端 40 秒收不到应用层心跳就会把它断开,于是它正确地显示为离线。
+ */
+function withLeader(uid: number, devices: DeviceInfo[]): { leader: string | null; devices: DeviceInfo[] } {
+  const conns = wsClients.get(uid);
   return {
     leader: pickLeader(devices),
-    devices: devices.map((d) => ({ ...d, online: Date.now() - d.lastSeen <= ONLINE_MS })),
+    devices: devices.map((d) => ({ ...d, online: Boolean(conns?.has(d.deviceId)) })),
   };
 }
 
@@ -699,17 +670,16 @@ app.post('/api/relay/hello', async (req, reply) => {
   // 事件驱动:有新端(或久未出现的端)上线 → 向其它端广播一条"有端加入",带上它的水位/向量/条目数。
   // 其它端收到就立刻比对、索取缺口 → 多端同时上线的"注册竞态"不靠定时器也能收敛。
   const self = devices.find((d) => d.deviceId === from);
-  const others = devices.filter(
-    (d) => d.deviceId !== from && Date.now() - d.lastSeen <= ONLINE_MS,
-  );
-  if (self && others.length) {
+  const conns = wsClients.get(user.id);
+  const othersOnline = devices.filter((d) => d.deviceId !== from && conns?.has(d.deviceId));
+  if (self && othersOnline.length) {
     const info = JSON.stringify({
       plain: { watermark: self.watermark, vector: self.vector, count: self.count },
     });
-    await mboxPushToOthers(user.id, from, JSON.stringify({ kind: 'notify', from, payload: info, to: '' }));
-    wakeRelayWaiters(user.id, from, '');
+    // 直投给其它在线端:它们据此反向比对,发现自己缺什么就来索取。
+    deliverToOthers(user.id, from, { kind: 'notify', from, payload: info, to: '' });
   }
-  return withLeader(devices);
+  return withLeader(user.id, devices);
 });
 
 /** 心跳:定期上报水位(幂等,不改 loginAt),顺带拿回最新设备表与主端。 */
@@ -723,13 +693,13 @@ app.post('/api/relay/heartbeat', async (req, reply) => {
   };
   if (typeof from !== 'string' || !from) return reply.code(400).send({ error: '缺少 from' });
   const devices = await deviceTouch(user.id, from, String(watermark ?? ''), vector ?? {}, Number(count) || 0);
-  return withLeader(devices);
+  return withLeader(user.id, devices);
 });
 
 /** 设备表 + 当前主端(不改变任何状态)。 */
 app.get('/api/relay/devices', async (req) => {
   const user = (req as AuthedRequest).user!;
-  return withLeader(await deviceList(user.id));
+  return withLeader(user.id, await deviceList(user.id));
 });
 
 /** 我更新了(广播,携带新水位 xxxa)。仅元数据,不含日记内容。 */
@@ -745,8 +715,7 @@ app.post('/api/relay/notify', async (req, reply) => {
   if (typeof from !== 'string' || !from) return reply.code(400).send({ error: '缺少 from' });
   await deviceTouch(user.id, from, String(watermark ?? ''), vector ?? {}, Number(count) || 0);
   const body = typeof payload === 'string' && payload ? payload : JSON.stringify({ plain: { watermark } });
-  const delivered = await mboxPushToOthers(user.id, from, JSON.stringify({ kind: 'notify', from, payload: body, to: '' }));
-  wakeRelayWaiters(user.id, from, '');
+  const delivered = deliverToOthers(user.id, from, { kind: 'notify', from, payload: body, to: '' });
   req.log.info({ from, watermark: String(watermark ?? ''), count: Number(count) || 0, delivered }, '设备通知 notify');
   return { ok: true };
 });
@@ -779,8 +748,7 @@ app.post('/api/relay/need', async (req, reply) => {
             toWatermark: String(toWatermark ?? ''),
           },
         });
-  const delivered = await mboxPush(user.id, to, JSON.stringify({ kind: 'need', from, payload: needBody, to }));
-  wakeRelayWaiters(user.id, from, to);
+  const delivered = deliverToDevice(user.id, to, { kind: 'need', from, payload: needBody, to }) ? 1 : 0;
   req.log.info({ from, to, origin: String(origin ?? ''), fromWatermark: String(fromWatermark ?? ''), toWatermark: String(toWatermark ?? ''), reachable, delivered }, '区间索取 need');
   return { ok: true, reachable, delivered };
 });

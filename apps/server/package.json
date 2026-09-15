@@ -1,6 +1,6 @@
 {
   "name": "@diary/server",
-  "version": "0.16.60",
+  "version": "0.16.61",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,7 +11,7 @@
     "test:companion": "tsx scripts/test-companion.ts",
     "test:media": "tsx scripts/test-media.ts",
     "test:mail": "tsx scripts/test-mail.ts",
-    "test:sync": "tsx scripts/test-sync-protocol.ts",
+    "test:relay": "tsx scripts/test-relay-direct.ts",
     "check:cloud": "tsx scripts/check-cloud-sync.ts",
     "test:ws": "tsx scripts/test-ws.ts"
   },

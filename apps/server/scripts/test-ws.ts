@@ -198,8 +198,8 @@ async function main(): Promise<void> {
   const cBefore = C.msgs.length;
   await req('/api/relay/push', { body: { from: 'dev-WS-A', payload: 'x', kind: 'data' }, token });
   await sleep(600);
-  ok(B.msgs.length > bBefore && B.msgs.at(-1)?.type === 'wake', 'B 收到唤醒');
-  ok(C.msgs.length > cBefore && C.msgs.at(-1)?.type === 'wake', 'C 收到唤醒');
+  ok(B.msgs.length > bBefore && B.msgs.at(-1)?.type === 'mail', 'B 收到直投信封(mail)');
+  ok(C.msgs.length > cBefore && C.msgs.at(-1)?.type === 'mail', 'C 收到直投信封(mail)');
 
   // 定向:A 定向发给 B → B 收到,C 不应收到
   const cBefore2 = C.msgs.length;
@@ -239,19 +239,24 @@ async function main(): Promise<void> {
   clearInterval(hb);
   ok(E.ws.readyState === WebSocket.OPEN, '持续发心跳的连接保持在线');
 
-  // ---------- 断线后长轮询/信箱兜底 ----------
-  // WS 只是唤醒通道;真正取件走 HTTP 信箱。WS 断开后,件依然能取到(兜底有效)。
-  await req('/api/relay/push', { body: { from: 'dev-WS-A', to: 'dev-WS-B', payload: 'm1', kind: 'data' }, token });
-  await sleep(300);
-  B.ws.close();
-  await sleep(300);
-  const mbox = await req<{ messages: Array<{ payload?: string }> }>(
-    `/api/relay/mbox?from=dev-WS-B&limit=50`,
-    { token },
-  );
-  ok((mbox.data.messages ?? []).length > 0, 'WS 断开后,信箱仍能取到件(兜底通道有效)');
-  const drained = await req<{ messages: unknown[] }>(`/api/relay/mbox?from=dev-WS-B&limit=50`, { token });
-  ok((drained.data.messages ?? []).length === 0, '取走即删:再取一次已为空(服务端不留存)');
+  // ---------- 直投语义:连着就送达,断开就不投(服务端零存储) ----------
+  // 用一条**新连接**(B 早已因不发应用层心跳被服务端断开,不适合做"在线"样本)
+  const tp = await req<{ ticket?: string }>('/api/relay/ws-ticket', { body: { deviceId: 'dev-WS-PUSH' }, token });
+  const P = openSocket(String(tp.data.ticket));
+  await sleep(500);
+  const sent = await req<{ delivered?: number }>('/api/relay/push', {
+    body: { from: 'dev-WS-A', to: 'dev-WS-PUSH', payload: 'm1', kind: 'data' },
+    token,
+  });
+  ok((sent.data.delivered ?? 0) === 1, '目标在线 → 定向 push 直接送达(delivered=1)');
+  ok(P.msgs.some((m) => m.type === 'mail'), '在线端确实收到了 mail 信封(数据走 WS 直投)');
+  P.ws.close();
+  await sleep(500);
+  const dropped = await req<{ delivered?: number }>('/api/relay/push', {
+    body: { from: 'dev-WS-A', to: 'dev-WS-PUSH', payload: 'm2', kind: 'data' },
+    token,
+  });
+  ok((dropped.data.delivered ?? 1) === 0, '目标已断开 → delivered=0(服务端不暂存,离线即不同步)');
 
   A.ws.close();
   C.ws.close();

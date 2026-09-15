@@ -1,15 +1,14 @@
 /**
- * Redis 中继 —— **服务端不承担存储**,只做"把东西递给此刻在线的端"。
+ * 中继的**唯一**持久状态:多端水位注册表。数据面完全不经过这里。
  *
- * 原则(按需求方定义):
- *   端与端之间是请求/应答式沟通 ——"我少了数据 → 请你推给我 → 好的 → 我拉走了"。
- *   服务端只是中转站,**取走即删**,因此永远轻量且即时。
+ * 原则(按需求方定义):**在线即同步,离线不同步**。
+ *   数据由服务端在两个 WebSocket 之间**直投**(见 index.ts 的 deliverToDevice /
+ *   deliverToOthers),不落任何存储 —— 没有信箱、没有消息队列、没有"取走即删"这一层。
+ *   离线端错过的东西,靠它下次上线时的「水位向量对账」补齐(协议本身是自愈的)。
  *
- * 服务端保留的只有两样东西:
- *   trans:{uid}:reg         多端状态(每台设备的水位 / 水位向量 / 条目数 / 登录时刻 / 最近活跃)
- *   trans:{uid}:mbox:{dev}  该端**尚未取走的信件**(LIST),取走即删;TTL 只作兜底
+ * 服务端保留的只有这一样东西(纯元数据,不含任何内容):
+ *   trans:{uid}:reg   多端状态(每台设备的水位 / 水位向量 / 条目数 / 登录时刻 / 最近活跃)
  *
- * 离线端不投递:它回来时按"水位向量比对"向在线的端索取即可,服务端无需为它攒数据。
  * 隐私:中转的载荷一律是端到端加密的密文,服务端不解密、不读内容。
  */
 import Redis from 'ioredis';
@@ -18,9 +17,17 @@ let client: Redis | null = null;
 
 export function initRelayRedis(url: string): void {
   if (client) return;
-  client = new Redis(url, { maxRetriesPerRequest: null, connectTimeout: 3000, lazyConnect: false });
+  client = new Redis(url, {
+    // 连不上就**快速失败**,不要无限重试 —— 实测事故:Redis 被 OOM 杀掉后,
+    // maxRetriesPerRequest: null 让每条命令无限挂起,把整个中继拖成"客户端超时",
+    // 排查方向被带偏了很久。这里宁可报错,也不要静默挂死。
+    maxRetriesPerRequest: 2,
+    commandTimeout: 5000, // 单条命令 5 秒无响应即报错(兜底)
+    connectTimeout: 3000,
+    lazyConnect: false,
+  });
   client.on('error', (e) => {
-    console.error('[relay-redis] 连接错误:', (e as Error).message);
+    console.error('[relay-redis] 连接错误(检查 Redis 是否在运行):', (e as Error).message);
   });
 }
 export function closeRelayRedis(): void {
@@ -170,68 +177,38 @@ export function pickLeader(devices: DeviceInfo[]): string | null {
   return sorted[0]?.deviceId ?? null;
 }
 
-// ==================== 每设备信箱(取走即删) ====================
-
-const MBOX_TTL = 7 * 24 * 3600; // 仅作兜底:正常情况下信件几秒内就被取走
-const mboxKey = (uid: number, deviceId: string) => `trans:${uid}:mbox:${deviceId}`;
+// ==================== 旧版遗留 key 的清理 ====================
 
 /**
- * 投递一条给指定设备 —— **只投给此刻在线的端**。
- * 离线的端不投(它回来时按水位向量索取即可),所以服务端几乎不积压任何数据。
- * 返回是否真的投进去了。
+ * 清理历史版本留下的死 key(**只删确定无用的,绝不碰当前在用的 `trans:{uid}:reg`**)。
+ *
+ *   trans:{uid}:events         旧版:Redis Stream 共享消息日志(线上实测堆到 99MB)
+ *   trans:{uid}:seq            旧版:Stream 自增序号
+ *   trans:{uid}:offset:{dev}   旧版:每设备游标
+ *   trans:{uid}:devices        旧版:终端集合 SET
+ *   trans:{uid}:mbox:{dev}     上一版:每设备信箱(现在改为 WS 直投,已无意义)
+ *
+ * 背景:当年重构只删了**代码**,没删线上**数据**,于是这些 key 一直占着内存
+ * (Stream 的 radix tree 即使条目被裁掉也不把内存还给系统)。启动时扫一遍清掉,
+ * 任何环境升级都自动生效,不需要人工记得去 redis-cli。
+ *
+ * 清理失败不影响服务启动。
  */
-export async function mboxPush(uid: number, deviceId: string, payload: string): Promise<boolean> {
-  if (!deviceId) return false;
-  const info = (await deviceList(uid)).find((d) => d.deviceId === deviceId);
-  if (!info) return false; // 没注册过的设备不投
-  /*
-   * 离线的端**也投** —— 投进它自己的信箱,等它回来取走(取走即删,TTL 兜底)。
-   *
-   * 为什么必须投:一台设备关机/退出的这段时间里,别的端写的东西只有两条路能到它手里 ——
-   *   ① 它回来时向对端索取,但对端可能正在后台被系统冻结(手机),索取会落空;
-   *   ② 服务端替它暂存这几封信,它一回来就取走。
-   * 只有 ② 是可靠的。这不违反"服务端不承担存储":信件是加密的、取走即删、且有 TTL 上限。
-   */
+export async function cleanupLegacyKeys(): Promise<number> {
   const r = c();
-  const k = mboxKey(uid, deviceId);
-  await r.rpush(k, payload);
-  await r.expire(k, MBOX_TTL);
-  return true;
-}
-
-/** 投递给该账号**除 exclude 之外、且当前在线**的设备。 */
-export async function mboxPushToOthers(uid: number, exclude: string, payload: string): Promise<number> {
-  const now = Date.now();
-  const devices = await deviceList(uid);
-  let n = 0;
-  for (const d of devices) {
-    if (d.deviceId === exclude) continue;
-    if (now - d.lastSeen > DEVICE_ONLINE_MS) continue; // 离线的不投
-    if (await mboxPush(uid, d.deviceId, payload)) n++;
+  const patterns = ['trans:*:events', 'trans:*:seq', 'trans:*:offset:*', 'trans:*:devices', 'trans:*:mbox:*'];
+  let removed = 0;
+  for (const pattern of patterns) {
+    try {
+      const stream = r.scanStream({ match: pattern, count: 200 });
+      for await (const keys of stream as AsyncIterable<string[]>) {
+        if (Array.isArray(keys) && keys.length) removed += Number(await r.del(...keys)) || 0;
+      }
+    } catch (e) {
+      console.error(`[relay-redis] 清理遗留 key 失败(${pattern}):`, (e as Error).message);
+    }
   }
-  return n;
-}
-
-/** 取走该设备信箱里的最多 limit 条(取走即消费,原子操作 —— 服务端不留存)。 */
-export async function mboxDrain(uid: number, deviceId: string, limit = 50): Promise<string[]> {
-  if (!deviceId) return [];
-  const r = c();
-  const k = mboxKey(uid, deviceId);
-  const items = (await r.eval(
-    `local items = redis.call('LRANGE', KEYS[1], 0, tonumber(ARGV[1]) - 1)
-     if #items > 0 then redis.call('LTRIM', KEYS[1], #items, -1) end
-     return items`,
-    1,
-    k,
-    String(Math.max(1, limit)),
-  )) as unknown as string[];
-  return Array.isArray(items) ? items : [];
-}
-
-/** 信箱里还有多少条(诊断用)。 */
-export async function mboxLen(uid: number, deviceId: string): Promise<number> {
-  const r = c();
-  return Number(await r.llen(mboxKey(uid, deviceId))) || 0;
+  return removed;
 }
 
 /** 从注册表移除一台终端(用于清理无数据且长期离线的僵尸记录)。 */

@@ -13,7 +13,7 @@ import { emitDataChanged } from './lib/dataEvents';
 import { getDeviceId } from './lib/device';
 import { chatAll, chatPut } from './lib/chatStore';
 import { handleEngineSyncEvent } from './lib/syncStatus';
-import { SyncEngine, type SyncStore, type SyncTransport, type DiaryEntry as EngineEntry, type SyncLogCategory } from '@diary/shared/syncEngine';
+import { SyncEngine, type SyncStore, type SyncTransport, type DiaryEntry as EngineEntry, type SyncLogCategory, type SyncEnvelope } from '@diary/shared/syncEngine';
 import { IdbBackend, createLocalApi, listImageIds, type LocalBackend } from './lib/localStore';
 import { exportMediaFor, importImageDataUrl, normalizeUploadRefs } from './lib/image';
 import { getFetch } from './lib/net';
@@ -208,63 +208,6 @@ async function fetchWithTimeout(
 
 async function http<T>(url: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
   const res = await fetchWithTimeout(resolve(url), init, timeoutMs);
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
-    throw new Error(body?.message ?? body?.error ?? `请求失败 (${res.status})`);
-  }
-  return res.json() as Promise<T>;
-}
-
-/**
- * 用**浏览器原生 fetch**发请求(不走 Tauri 的 HTTP 插件)。
- *
- * 为什么需要:桌面端默认走 @tauri-apps/plugin-http(为了绕过 webview 的 CORS),
- * 但它在响应体较大时会抛 "Cannot read properties of undefined (reading 'id')"
- * —— 而"取件"的响应恰恰可能很大(对端推来的数据里带图片/视频)。实测日志里
- * 每一次取件都是这个错,导致电脑端再也收不到任何东西。
- * 服务端已允许跨域,所以这几条路径直接用原生 fetch 更稳。
- */
-
-/**
- * 用 XMLHttpRequest 发请求 —— 真正绕开 Tauri 的 HTTP 插件。
- *
- * 关键事实:Tauri v2 会把 window.fetch 整个替换成它自己的实现,所以写 globalThis.fetch
- * 拿到的**仍然是插件**;只有 XHR 没被替换。实测:收件(响应里带对端推来的数据)时插件会抛
- * "Cannot read properties of undefined (reading 'id')",换成 XHR 才能彻底走开这条路。
- */
-function httpXhr<T>(url: string, timeoutMs = 25_000): Promise<T> {
-  return new Promise<T>((resolvePromise, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('GET', resolve(url), true);
-    const h = authHeaders();
-    for (const k of Object.keys(h)) xhr.setRequestHeader(k, h[k]!);
-    xhr.timeout = timeoutMs;
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          resolvePromise(JSON.parse(xhr.responseText) as T);
-        } catch (e) {
-          reject(new Error(`响应解析失败:${(e as Error).message}`));
-        }
-        return;
-      }
-      let msg = `请求失败 (${xhr.status})`;
-      try {
-        const b = JSON.parse(xhr.responseText) as { error?: string; message?: string };
-        msg = b.message ?? b.error ?? msg;
-      } catch {
-        /* 用默认信息 */
-      }
-      reject(new Error(msg));
-    };
-    xhr.onerror = () => reject(new Error('网络错误'));
-    xhr.ontimeout = () => reject(new Error('请求超时'));
-    xhr.send();
-  });
-}
-
-async function httpDirect<T>(url: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
-  const res = await fetchWithTimeout(resolve(url), init, timeoutMs, true);
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
     throw new Error(body?.message ?? body?.error ?? `请求失败 (${res.status})`);
@@ -625,19 +568,6 @@ function makeEngineTransport(deviceId: string): SyncTransport {
         body: JSON.stringify({ from: deviceId, to: p.to, payload: p.payload, kind: 'data' }),
       });
     },
-    // 取走自己的信箱(取走即消费,无游标)
-    // 收件走 XHR:响应里可能带对端推来的数据,而 Tauri 的 fetch 插件在这里会崩(实测)
-    drainMailbox: (p) =>
-      httpXhr<{ messages: []; remaining?: number }>(
-        `/api/relay/mbox?from=${encodeURIComponent(deviceId)}&limit=${p.limit}`,
-      ),
-    wait: (p) =>
-      // 只问"有没有"(不带位置);服务端挂起最长 20 秒,超时留足余量
-      http<{ hasNew: boolean }>(
-        '/api/relay/wait',
-        { method: 'POST', body: JSON.stringify({ from: deviceId }) },
-        40_000,
-      ),
   };
 }
 
@@ -753,22 +683,14 @@ export async function relayDevices(): Promise<
   }));
 }
 
-export async function relayPullOnly(): Promise<{ pulled: number }> {
-  const { merged } = await getSyncEngine().drain();
-  return { pulled: merged };
-}
-
 /**
- * 长轮询即时通知:等"别人有没有新消息"(游标 after 之后)。不拉数据、不推送。
- * 服务端挂起至有新消息(→hasNew:true)/超时(false)。拿到 hasNew 后再调 relayPullOnly 拉真实数据。
+ * 收到服务端**直投**过来的一个信封(WebSocket mail 帧)→ 直接交给引擎处理。
+ *
+ * 这就是过去的"取件" —— 区别只在于:现在是服务端把数据推过来,而不是客户端去信箱拉。
+ * 服务端零存储,所以离线时不会有任何东西排队;缺口靠重新上线后的水位向量对账补齐。
  */
-export async function relayWaitOnce(after: number, timeoutMs = 25000): Promise<{ hasNew: boolean }> {
-  const deviceId = getDeviceId();
-  const r = await http<{ hasNew: boolean }>('/api/relay/wait', {
-    method: 'POST',
-    body: JSON.stringify({ from: deviceId, after }),
-  });
-  return { hasNew: Boolean(r?.hasNew) };
+export async function receiveRelayMail(envelope: SyncEnvelope): Promise<number> {
+  return getSyncEngine().receive(envelope);
 }
 
 /** 测试辅助。 */

@@ -21,7 +21,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   // 本机同步自查状态(全部读本地,不发网络请求):通道 / 本机条目数 / 水位 / 上次同步
-  const [channel, setChannel] = useState<'ws' | 'poll'>(getSyncChannel());
+  const [channel, setChannel] = useState<'ws' | 'offline'>(getSyncChannel());
   const [localCount, setLocalCount] = useState<number | null>(null);
   const [localWatermark, setLocalWatermark] = useState('');
   const [diag, setDiag] = useState<{ lastSyncAt: string; lastError: string; lastErrorAt: string; lastHandled: number } | null>(null);
@@ -232,7 +232,7 @@ export default function MyView({ onOpenDay }: { onOpenDay: (date: string) => voi
       {notice && <p className="ok" style={{ textAlign: 'center' }}>{notice}</p>}
 
       <p className="mine-version">
-        版本 v{__APP_VERSION__} · 唤醒通道 {channel === 'ws' ? 'WebSocket' : '长轮询(兜底)'}
+        版本 v{__APP_VERSION__} · 通道 {channel === 'ws' ? 'WebSocket(实时)' : '未连接'}
         {localCount !== null && (
           <>
             <br />

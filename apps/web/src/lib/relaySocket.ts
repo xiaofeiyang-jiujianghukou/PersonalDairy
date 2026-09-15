@@ -2,13 +2,14 @@ import { getApiBase, getToken } from '../api';
 import { getDeviceId } from './device';
 
 /**
- * 中继的 WebSocket 即时唤醒通道(主通道)。
+ * 中继的 WebSocket 通道 —— **既是数据通道,也是在线判据**。
  *
- * 定位:只负责"有新消息了,快去拉"这一个信号 —— 业务数据仍然走 HTTP 的
- * need / serve / pull(见 packages/shared/src/syncEngine.ts),所以:
- *   · WS 只是**延迟优化**,断掉不影响正确性;
- *   · WS 不可用时由长轮询兜底(syncAuto 里只在 WS 未连通时才跑轮询循环);
- *   · 断线重连成功后立刻做一次完整对账,补齐断线期间可能错过的变化。
+ * 定位:服务端把信封(notify / need / 加密数据)**直接推过来**,收到即交给引擎处理
+ * (见 packages/shared/src/syncEngine.ts 的 receive())。数据不再走 HTTP 取件,
+ * 服务端也不做任何暂存 —— 离线就收不到,靠下次上线时的水位向量对账补齐。
+ *
+ * 可靠性:手机被系统冻结时服务端会因收不到应用层心跳而断开它;客户端这边也有看门狗
+ * 发现"悄悄死掉的连接"。任何一侧重连成功都会立刻做一次完整对账,把缺口补回来。
  *
  * 鉴权:浏览器/WebView 的 WebSocket API **不能带自定义请求头**,因此先用 Bearer
  * 换一张一次性短时票据(POST /api/relay/ws-ticket),再用 ?ticket= 建连 ——
@@ -18,8 +19,8 @@ import { getDeviceId } from './device';
 export type RelayStatus = 'idle' | 'connecting' | 'open' | 'closed';
 
 interface RelaySocketOptions {
-  /** 收到"有新消息"唤醒。 */
-  onWake: () => void;
+  /** 收到服务端**直投**过来的信封(notify / need / 加密数据)。 */
+  onMail: (envelope: unknown) => void;
   /** 连接建立(首次或重连成功)。用于立即对账。 */
   onOpen?: () => void;
   /** 状态变化。 */
@@ -47,6 +48,8 @@ export class RelaySocket {
   private lastInbound = 0;
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private openedAt = 0;
+  /** 大信封的分片重组缓冲:分片 id → { total, parts }。 */
+  private readonly chunkBuf = new Map<string, { total: number; parts: string[] }>();
 
   constructor(o: RelaySocketOptions) {
     this.o = o;
@@ -202,11 +205,45 @@ export class RelaySocket {
     };
     ws.onmessage = (ev) => {
       this.lastInbound = Date.now(); // 有消息就说明链路是活的
+      let msg: {
+        type?: string;
+        envelope?: unknown;
+        chunk?: { id?: string; seq?: number; total?: number; data?: string };
+      };
       try {
-        const msg = JSON.parse(String(ev.data)) as { type?: string };
-        if (msg?.type === 'wake') this.o.onWake();
+        msg = JSON.parse(String(ev.data)) as typeof msg;
       } catch {
-        /* 非 JSON 忽略 */
+        return; // 非 JSON(或心跳)忽略
+      }
+      if (msg?.type !== 'mail') return; // ping / ready 等控制帧不在这里处理
+      // 小信封:一帧就是一个完整信封
+      if (msg.envelope !== undefined) {
+        this.o.onMail(msg.envelope);
+        return;
+      }
+      // 大信封:分片 → 重组后再交给引擎
+      const ch = msg.chunk;
+      if (
+        !ch ||
+        typeof ch.id !== 'string' ||
+        typeof ch.seq !== 'number' ||
+        typeof ch.total !== 'number' ||
+        typeof ch.data !== 'string'
+      ) {
+        return;
+      }
+      const buf = this.chunkBuf.get(ch.id) ?? { total: ch.total, parts: [] };
+      buf.total = ch.total;
+      buf.parts[ch.seq] = ch.data;
+      this.chunkBuf.set(ch.id, buf);
+      let got = 0;
+      for (const p of buf.parts) if (typeof p === 'string') got++;
+      if (got < buf.total) return;
+      this.chunkBuf.delete(ch.id);
+      try {
+        this.o.onMail(JSON.parse(buf.parts.join('')));
+      } catch {
+        /* 重组后仍解析失败 → 丢弃这一封 */
       }
     };
     ws.onerror = () => {
