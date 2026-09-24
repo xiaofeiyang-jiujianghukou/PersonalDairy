@@ -82,7 +82,17 @@ export default function EntryItem({
       </div>
 
       {editing ? (
-        <BlocksEditor blocks={draftBlocks} onChange={setDraftBlocks} />
+        <>
+          <BlocksEditor blocks={draftBlocks} onChange={setDraftBlocks} />
+          <div className="entry-edit-bar">
+            <button className="primary" onClick={save} disabled={busy}>
+              {busy ? '保存中…' : '保存修改'}
+            </button>
+            <button className="ghost" onClick={() => setEditing(false)} disabled={busy}>
+              取消
+            </button>
+          </div>
+        </>
       ) : (
         <div className="markdown">
           <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={allowImageUrlTransform} components={{ img: ResolvedImage }}>

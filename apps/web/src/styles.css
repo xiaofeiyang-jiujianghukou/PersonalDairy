@@ -218,13 +218,26 @@ button.ghost:disabled {
   border: none;
   outline: none;
   resize: none;
-  overflow: hidden;
+  /*
+   * 高度策略(修「写长文时会跳到页面顶部」):
+   *   · 文本框随内容长高,但**有上限**;超过上限就让它自己内部滚动,
+   *     而不是继续把整页撑长 —— 页面高度稳定了,重排就不会再把滚动位置甩走。
+   *   · 一旦内部可滚,浏览器会**原生**保证光标可见,完全不需要 JS 手动滚页面。
+   *   · 这里不再用 `field-sizing: content`:它和 JS 测量会互相打架(两套自动增高)。
+   */
+  overflow-y: auto;
   background: transparent;
   font-family: var(--font);
   font-size: 16px;
   line-height: 1.8;
   color: var(--ink);
   min-height: 44px;
+  max-height: 70vh;
+  max-height: 70dvh;
+  box-sizing: border-box;
+  padding: 4px 0;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .block-image {
@@ -562,6 +575,23 @@ button.ghost:disabled {
 .entry-actions button:hover {
   background: var(--accent-soft);
   color: var(--ink);
+}
+
+.entry-edit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.entry-edit-bar button.primary,
+.entry-edit-bar button.ghost {
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 14px;
 }
 
 /* ---------- Markdown 渲染 ---------- */
