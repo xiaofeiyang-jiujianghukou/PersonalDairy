@@ -16,7 +16,15 @@
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
-            android:exported="true">
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <!--
+              windowSoftInputMode=adjustResize:软键盘弹出时**把窗口缩小**,而不是默认的
+              adjustPan(整窗平移)。WebView 占满全屏时平移是无效的 —— 键盘会直接盖在内容上,
+              正在编辑的文字既看不到也点不到(实测就是这个现象)。
+              Android 15+ 强制 edge-to-edge 时这一项会被忽略,那种情况下由 Capacitor 的
+              SystemBars 按 IME inset 给 WebView 补 padding,两条路互补。
+            -->
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

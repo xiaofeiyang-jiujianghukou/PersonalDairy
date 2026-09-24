@@ -50,6 +50,30 @@ function maxTextareaHeight(): number {
   return Math.max(200, Math.round(visible * 0.6));
 }
 
+/**
+ * 软键盘**盖住**了多高。
+ *
+ * 两种情况会算出不同结果,正好可以自适应:
+ *   · WebView 随键盘一起缩小了(Android 15+ / WebView≥140 时 Capacitor 会补 inset):
+ *     innerHeight 已经不含键盘 → 算出 ≈ 0 → 不加多余空隙;
+ *   · WebView 没缩(edge-to-edge 且 Capacitor 没补,旧系统/旧 WebView):
+ *     visualViewport 会先于布局视口缩小 → 算出键盘高度 → 给页面补足可滚空间。
+ * 两种情况都不会重复补偿。
+ */
+function keyboardOverlap(): number {
+  if (typeof window === 'undefined') return 0;
+  const vv = window.visualViewport;
+  if (!vv) return 0;
+  const overlap = window.innerHeight - (vv.height + vv.offsetTop);
+  return overlap > 24 ? Math.round(overlap) : 0; // 24px 容差,避免抖动误判
+}
+
+/** 把"被键盘盖住的高度"写进 CSS 变量,让页面能滚到键盘上方。 */
+function syncKeyboardPadding(): void {
+  if (typeof document === 'undefined') return;
+  document.documentElement.style.setProperty('--kb-overlap', `${keyboardOverlap()}px`);
+}
+
 /** 需要复制到镜像上的排版样式(宽度单独设)。 */
 const MIRROR_STYLE_KEYS = [
   'fontFamily',
@@ -146,10 +170,22 @@ function ensureCaretInView(el: HTMLTextAreaElement | null) {
   else if (caretClientY < topbarSafe) delta = caretClientY - topbarSafe;
   if (delta === 0) return;
 
-  // 夹紧幅度:一次最多挪半屏,任何异常都不会把页面甩到最顶/最底
+  /*
+   * 分步滚动 + 幅度夹紧:
+   *   · 每一步最多挪半屏 —— 任何测量异常都不可能一次把页面甩到最顶/最底;
+   *   · 但最多走 4 步,所以键盘很高时一次调用也能补齐(否则要等用户再敲几个字才收敛);
+   *   · 用 instant(behavior:'auto')而不是 smooth:每一步的滚动位置立刻生效,
+   *     才能用 window.scrollY 的真实变化量算出剩余距离,不会边走边算收敛不了。
+   */
   const limit = Math.round(viewportHeight * 0.5);
-  const clamped = Math.max(-limit, Math.min(limit, delta));
-  window.scrollBy({ top: clamped, behavior: 'smooth' });
+  let prevY = window.scrollY;
+  for (let i = 0; i < 4 && Math.abs(delta) > 1; i++) {
+    window.scrollBy({ top: Math.max(-limit, Math.min(limit, delta)), behavior: 'auto' });
+    const moved = window.scrollY - prevY;
+    prevY = window.scrollY;
+    delta -= moved;
+    if (moved === 0) break; // 已经滚到边界,再滚也没用
+  }
 }
 
 /**
@@ -181,24 +217,40 @@ export default function BlocksEditor({
     }
   }, []);
 
+  /** 若焦点正在某个文本块里,把它的光标重新拉进可视区(键盘弹起后必须再来一次)。 */
+  const ensureFocusedCaret = useCallback(() => {
+    if (typeof document === 'undefined') return;
+    const el = document.activeElement as HTMLTextAreaElement | null;
+    if (el && el.tagName === 'TEXTAREA' && el.classList.contains('block-textarea')) {
+      ensureCaretInView(el);
+    }
+  }, []);
+
   // blocks 变化时同步高度(绝不使用会造成塌陷跳顶的 height = 'auto')
   useEffect(() => {
     syncAllHeights();
   }, [blocks, syncAllHeights]);
 
-  // 监听视口或窗口尺寸变动(如手机软键盘弹起、横竖屏切换)
+  // 编辑期间跟随视口变化:软键盘弹起/收起、横竖屏切换
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     /*
      * 去抖:软键盘弹起/收起的动画期间 resize 会连续触发几十次。
      * 而高度上限是按可见区域算的,若每次都重算,文本框会在动画期间不停伸缩(看着像抖)。
      * 等尺寸稳定下来再算一次即可。
+     *
+     * 这里必须**同时**做三件事 —— 少任何一件,键盘就会盖住正在编辑的内容:
+     *   ① 给页面补足"被键盘盖住"的可滚空间;
+     *   ② 重算文本块高度;
+     *   ③ 把光标重新拉进可视区(以前只做了 ②,所以键盘一弹起来光标就被埋了)。
      */
     const onResize = () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
+        syncKeyboardPadding();
         syncAllHeights();
+        ensureFocusedCaret();
       }, 120);
     };
     window.addEventListener('resize', onResize);
@@ -207,8 +259,12 @@ export default function BlocksEditor({
       if (timer) clearTimeout(timer);
       window.removeEventListener('resize', onResize);
       window.visualViewport?.removeEventListener('resize', onResize);
+      // 离开编辑器时把补偿清掉,别给别的页面留一条空白
+      if (typeof document !== 'undefined') {
+        document.documentElement.style.setProperty('--kb-overlap', '0px');
+      }
     };
-  }, [syncAllHeights]);
+  }, [syncAllHeights, ensureFocusedCaret]);
 
   useEffect(() => {
     if (pendingFocus) {
@@ -333,10 +389,21 @@ export default function BlocksEditor({
             }}
             onFocus={(e) => {
               const target = e.currentTarget;
+              syncKeyboardPadding();
+              // 软键盘是**聚焦之后**才弹起来的:150ms 时可能刚弹;400ms 再兜一次,确保光标没被埋
               setTimeout(() => {
+                syncKeyboardPadding();
                 syncTextareaHeight(target);
                 ensureCaretInView(target);
               }, 150);
+              setTimeout(() => {
+                syncKeyboardPadding();
+                ensureCaretInView(target);
+              }, 400);
+            }}
+            onBlur={() => {
+              // 键盘收起后重新量一次,把补的可滚空间清掉
+              setTimeout(syncKeyboardPadding, 150);
             }}
             onChange={(e) => updateText(b.id, e.target.value)}
             onPaste={(e) => handlePaste(e, i)}

@@ -928,9 +928,16 @@ a {
   padding-top: max(14px, env(safe-area-inset-top));
 }
 
-/* 底部手势条安全区 */
+/*
+ * 底部手势条安全区 + 软键盘补偿。
+ *
+ * --kb-overlap 由编辑器在"编辑期间"写入:当 WebView 并没有随键盘一起缩小时
+ * (edge-to-edge 且 Capacitor 未补 inset 的老系统/老 WebView),键盘是**浮在页面之上**的,
+ * 光标会被盖住。这里补出同样高度的可滚空间,页面就能把光标滚到键盘上方。
+ * 若 WebView 已经缩过(此时 --kb-overlap 算出来是 0),不会重复补偿。
+ */
 .main {
-  padding-bottom: calc(48px + env(safe-area-inset-bottom));
+  padding-bottom: calc(48px + env(safe-area-inset-bottom) + var(--kb-overlap, 0px));
 }
 
 @media (max-width: 640px) {
