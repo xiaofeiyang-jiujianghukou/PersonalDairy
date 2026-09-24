@@ -188,10 +188,23 @@ export default function BlocksEditor({
 
   // 监听视口或窗口尺寸变动(如手机软键盘弹起、横竖屏切换)
   useEffect(() => {
-    const onResize = () => syncAllHeights();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    /*
+     * 去抖:软键盘弹起/收起的动画期间 resize 会连续触发几十次。
+     * 而高度上限是按可见区域算的,若每次都重算,文本框会在动画期间不停伸缩(看着像抖)。
+     * 等尺寸稳定下来再算一次即可。
+     */
+    const onResize = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        syncAllHeights();
+      }, 120);
+    };
     window.addEventListener('resize', onResize);
     window.visualViewport?.addEventListener('resize', onResize);
     return () => {
+      if (timer) clearTimeout(timer);
       window.removeEventListener('resize', onResize);
       window.visualViewport?.removeEventListener('resize', onResize);
     };
